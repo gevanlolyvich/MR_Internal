@@ -1,0 +1,30 @@
+const STATUS = Object.freeze({
+  DRAFT: 'DRAFT',
+  WAITING_OWNER_APPROVAL: 'WAITING_OWNER_APPROVAL',
+  REJECTED_BY_OWNER: 'REJECTED_BY_OWNER',
+  WAITING_MR_APPROVAL: 'WAITING_MR_APPROVAL',
+  REJECTED_BY_MR: 'REJECTED_BY_MR',
+  APPROVED: 'APPROVED',
+  ARCHIVED: 'ARCHIVED',
+});
+
+const ALL_STATUS = Object.values(STATUS);
+
+// Status yang boleh diubah isinya oleh Risk Officer
+const EDITABLE_STATUS = [STATUS.DRAFT, STATUS.REJECTED_BY_OWNER, STATUS.REJECTED_BY_MR];
+
+// Status yang tampil di menu Approval
+const OWNER_PENDING = [STATUS.WAITING_OWNER_APPROVAL];
+const MR_PENDING = [STATUS.WAITING_MR_APPROVAL];
+
+const STATUS_LABEL = {
+  DRAFT: 'Draft',
+  WAITING_OWNER_APPROVAL: 'Menunggu Approval Risk Owner',
+  REJECTED_BY_OWNER: 'Ditolak Risk Owner',
+  WAITING_MR_APPROVAL: 'Menunggu Approval MR',
+  REJECTED_BY_MR: 'Ditolak MR',
+  APPROVED: 'Disetujui',
+  ARCHIVED: 'Diarsipkan',
+};
+
+module.exports = { STATUS, ALL_STATUS, EDITABLE_STATUS, OWNER_PENDING, MR_PENDING, STATUS_LABEL };
