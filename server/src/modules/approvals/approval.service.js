@@ -91,6 +91,10 @@ const approve = async (id, req) => {
   const { newStatus, action } = assertApprovable(header, user);
   const isFinal = newStatus === STATUS.APPROVED;
 
+  if (user.role === ROLES.MR) {
+    await rrService.assertFollowUpStatusesComplete(id);
+  }
+
   const updated = await withTransaction(async (conn) => {
     const affected = await repo.updateStatusGuarded(conn, id, header.status, newStatus, {
       ...(isFinal ? { approved_at: new Date() } : {}),
@@ -158,7 +162,17 @@ const reject = async (id, reason, req) => {
 
   const { newStatus, action } = assertRejectable(header, user);
 
+  if (user.role === ROLES.MR) {
+    await rrService.assertFollowUpStatusesComplete(id);
+  }
+
   const updated = await withTransaction(async (conn) => {
+    await rrService.archiveFollowUps(conn, id, {
+      actorId: user.id,
+      actorRole: user.role,
+      action,
+      reason: String(reason).trim(),
+    });
     const affected = await repo.updateStatusGuarded(conn, id, header.status, newStatus);
     if (!affected) return false;
 
@@ -201,4 +215,6 @@ const reject = async (id, reason, req) => {
   return rrService.getDetail(id, user);
 };
 
-module.exports = { getQueue, getDetail, approve, reject };
+const setFollowUpStatuses = (id, statuses, req) => rrService.setFollowUpStatuses(id, statuses, req);
+
+module.exports = { getQueue, getDetail, approve, reject, setFollowUpStatuses };

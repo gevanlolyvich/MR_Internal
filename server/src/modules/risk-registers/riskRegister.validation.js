@@ -23,4 +23,7 @@ const listRules = [
   query('limit').optional().isInt({ min: 1, max: 100 }),
 ];
 
-module.exports = { idRule, createRules, updateRules, listRules };
+const itemIdRule = param('itemId').notEmpty().withMessage('Item mitigasi tidak valid');
+const docIdRule = param('docId').notEmpty().withMessage('Dokumen tidak valid');
+
+module.exports = { idRule, createRules, updateRules, listRules, itemIdRule, docIdRule };

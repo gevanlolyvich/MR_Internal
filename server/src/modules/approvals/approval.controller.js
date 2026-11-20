@@ -22,3 +22,8 @@ exports.reject = asyncHandler(async (req, res) => {
   const data = await service.reject(req.params.id, req.body.reason, req);
   res.json({ success: true, message: 'Risk Register ditolak', data });
 });
+
+exports.setFollowUpStatus = asyncHandler(async (req, res) => {
+  const data = await service.setFollowUpStatuses(req.params.id, req.body.items, req);
+  res.json({ success: true, message: 'Status tindak lanjut disimpan', data });
+});

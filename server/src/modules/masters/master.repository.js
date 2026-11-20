@@ -114,9 +114,9 @@ const remove = async (type, id) => {
 const isReferenced = async (type, id) => {
   const refMap = {
     categories: { table: 'risk_register_categories', column: 'category_id' },
-    treatments: { table: 'risk_register_causes', column: 'treatment_id' },
+    treatments: null,
     sources: { table: 'risk_register_causes', column: 'source_id' },
-    severities: { table: 'risk_register_causes', column: 'severity_id' },
+    severities: null,
     likelihoods: null,
     impacts: null,
     levels: null,

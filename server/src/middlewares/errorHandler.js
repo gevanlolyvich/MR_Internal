@@ -10,6 +10,15 @@ const errorHandler = (err, req, res, next) => {
   let message = err.message || 'Terjadi kesalahan pada server';
   let details = err.details || null;
 
+  if (err.name === 'MulterError') {
+    status = 400;
+    message = err.code === 'LIMIT_FILE_SIZE'
+      ? 'Ukuran file maksimal 5 MB'
+      : err.code === 'LIMIT_FILE_COUNT'
+        ? 'Maksimal 5 dokumen per tindakan mitigasi'
+        : `File tidak dapat diunggah (${err.code || 'upload error'})`;
+  }
+
   // MySQL duplicate key
   if (err.code === 'ER_DUP_ENTRY') {
     status = 409;

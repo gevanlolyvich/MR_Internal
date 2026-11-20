@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
-import api, { parseError } from '../../api/client';
+import api, { parseError, downloadDocument } from '../../api/client';
 import { Card, PageHeader, Spinner, EmptyState, Tabs, Field, CollapsibleSection } from '../../components/ui/Common';
 import { StatusBadge, LevelBadge, ToleranceBadge } from '../../components/ui/Badges';
 import { Modal, ConfirmDialog } from '../../components/ui/Modal';
@@ -27,6 +27,25 @@ const ACTION_LABEL = {
   UPDATE_MITIGATION: 'Mitigation diperbarui',
 };
 
+const FOLLOW_UP_STATUS_OPTIONS = [
+  { value: 'BELUM_MEMADAI', label: 'Belum Memadai' },
+  { value: 'TIDAK_DAPAT_DITINDAKLANJUTI', label: 'Tidak Dapat Ditindaklanjuti' },
+  { value: 'SELESAI', label: 'Selesai' },
+];
+
+const statusLabel = (value) => FOLLOW_UP_STATUS_OPTIONS.find((o) => o.value === value)?.label || value || '-';
+
+const parseMitigations = (raw) => {
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(raw) ? raw : [];
+};
+
 function KeyValue({ k, v }) {
   return (
     <div className="flex flex-col gap-0.5 border-b border-slate-100 py-2 sm:flex-row sm:gap-4">
@@ -51,6 +70,8 @@ export default function RiskRegisterDetailPage() {
   const [approveOpen, setApproveOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [openVersions, setOpenVersions] = useState(null);
+  const [levels, setLevels] = useState([]);
+  const [followUpDraft, setFollowUpDraft] = useState({});
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +81,16 @@ export default function RiskRegisterDetailPage() {
       ]);
       setData(detail.data.data);
       setHistory(hist.data.data);
+      setOpenVersions(hist.data.data?.mitigations?.[0]?.id ?? null);
+      const drafts = {};
+      (detail.data.data.categories || []).forEach((c) =>
+        (c.events || []).forEach((e) =>
+          parseMitigations(e.mitigation_items).forEach((it) => {
+            if (it?.id && it.follow_up_status) drafts[it.id] = it.follow_up_status;
+          })
+        )
+      );
+      setFollowUpDraft(drafts);
     } catch (err) {
       toast.error(parseError(err).message);
       navigate('/risk-registers');
@@ -72,8 +103,14 @@ export default function RiskRegisterDetailPage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    api.get('/masters/levels').then((r) => setLevels(r.data.data || [])).catch(() => {});
+  }, []);
+
   if (loading) return <Spinner />;
   if (!data) return <EmptyState title="Data tidak ditemukan" />;
+
+  const levelOfScore = (s) => levels.find((l) => s != null && s >= l.min_score && s <= l.max_score)?.level;
 
   const isOwner = user?.role === 'RISK_OWNER';
   const isMR = user?.role === 'MR';
@@ -84,6 +121,37 @@ export default function RiskRegisterDetailPage() {
     can('risk-register:edit') &&
     ['DRAFT', 'REJECTED_BY_OWNER', 'REJECTED_BY_MR'].includes(data.status) &&
     (isMR || data.risk_officer_id === user?.id);
+
+  const canSetFollowUpStatus = isMR && data.status === 'WAITING_MR_APPROVAL';
+  const allMitigationItems = (data.categories || []).flatMap((c) =>
+    (c.events || []).flatMap((e) =>
+      parseMitigations(e.mitigation_items).map((it) => ({ ...it, eventName: e.name }))
+    )
+  );
+  const statusOf = (it) => followUpDraft[it.id] || it.follow_up_status;
+  const statusesComplete =
+    allMitigationItems.length > 0 && allMitigationItems.every((it) => !!statusOf(it));
+  const mrNeedsStatus = canSetFollowUpStatus && !statusesComplete;
+
+  const saveFollowUpStatuses = async () => {
+    const items = allMitigationItems
+      .map((it) => ({ itemId: it.id, status: statusOf(it) }))
+      .filter((x) => x.itemId && x.status);
+    if (!items.length) {
+      toast.error('Belum ada status tindak lanjut yang diisi');
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.put(`/approvals/${id}/follow-up-status`, { items });
+      toast.success('Status tindak lanjut disimpan');
+      await load();
+    } catch (err) {
+      toast.error(parseError(err).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const doApprove = async () => {
     setBusy(true);
@@ -136,8 +204,22 @@ export default function RiskRegisterDetailPage() {
             )}
             {approvable && (
               <>
-                <button className="btn-danger" onClick={() => setRejectOpen(true)}>Reject</button>
-                <button className="btn-success" onClick={() => setApproveOpen(true)}>Approve</button>
+                <button
+                  className="btn-danger"
+                  disabled={mrNeedsStatus}
+                  title={mrNeedsStatus ? 'Lengkapi status tindak lanjut terlebih dahulu' : undefined}
+                  onClick={() => setRejectOpen(true)}
+                >
+                  Reject
+                </button>
+                <button
+                  className="btn-success"
+                  disabled={mrNeedsStatus}
+                  title={mrNeedsStatus ? 'Lengkapi status tindak lanjut terlebih dahulu' : undefined}
+                  onClick={() => setApproveOpen(true)}
+                >
+                  Approve
+                </button>
               </>
             )}
           </>
@@ -191,34 +273,47 @@ export default function RiskRegisterDetailPage() {
             <div className="space-y-3">
               {!data.categories?.length && <EmptyState title="Belum ada data" />}
               {(data.categories || []).map((cat) =>
-                cat.events.map((ev) =>
-                  ev.causes.map((cs) => (
-                    <div key={cs.id} className="rounded-lg border border-slate-200 p-4">
-                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                        <div>
-                          <p className="text-xs font-semibold uppercase text-slate-400">{cat.category_name}</p>
-                          <p className="text-sm font-semibold text-slate-700">{ev.name}</p>
-                          <p className="text-sm text-slate-600">Cause: {cs.name}</p>
-                        </div>
-                        <div className="text-right text-xs text-slate-500">
-                          <p>Sumber: <b>{cs.source_name || '-'}</b></p>
-                          <p>Severity: <b>{cs.severity_label || cs.severity_description || '-'}</b></p>
-                          <p>Rp: <b>{cs.rp_amount ? Number(cs.rp_amount).toLocaleString('id-ID') : '-'}</b></p>
-                        </div>
+                (cat.events || []).map((ev) => (
+                  <div key={ev.id} className="rounded-lg border border-slate-200 p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                      <div>
+                        <p className="text-xs font-semibold uppercase text-slate-400">{cat.category_name}</p>
+                        <p className="text-sm font-semibold text-slate-700">{ev.name}</p>
                       </div>
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <AssessBox title="Inherent Risk" d={cs.inherent} />
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                          <p className="mb-2 text-xs font-bold uppercase text-slate-500">Existing Control</p>
-                          <p className="text-sm">Ada/Tidak: <b>{cs.control_present}</b></p>
-                          <p className="text-sm">Memadai: <b>{cs.control_adequacy}</b></p>
-                          <p className="text-sm">Dijalankan: <b>{cs.control_implementation_pct}%</b></p>
-                        </div>
-                        <AssessBox title="Residual Risk" d={cs.residual} />
+                      <div className="text-right text-xs text-slate-500">
+                        <p>Causes: <b>{(ev.causes || []).map((c) => c.name).join('; ') || '-'}</b></p>
                       </div>
                     </div>
-                  ))
-                )
+                    <div className="mb-3 space-y-1">
+                      {(ev.causes || []).map((cs) => (
+                        <div key={cs.id} className="flex flex-wrap justify-between gap-2 rounded bg-white px-2 py-1 text-xs text-slate-600">
+                          <span>Cause: <b>{cs.name}</b>{cs.source_name ? ` · Sumber: ${cs.source_name}` : ''}</span>
+                          <span>
+                            Severity: <b>{cs.severity_description || '-'}</b> · Rp:{' '}
+                            <b>{cs.rp_amount != null ? Number(cs.rp_amount).toLocaleString('id-ID') : '-'}</b>
+                            {' · '}Unit: <b>{cs.work_unit || '-'}</b>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <AssessBox
+                        title="Inherent Risk"
+                        d={{ likelihood: ev.inherent_likelihood, impact: ev.inherent_impact, score: ev.inherent_score, level: levelOfScore(ev.inherent_score) }}
+                      />
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="mb-2 text-xs font-bold uppercase text-slate-500">Existing Control</p>
+                        <p className="text-sm">Ada/Tidak: <b>{ev.control_present || '-'}</b></p>
+                        <p className="text-sm">Memadai: <b>{ev.control_adequacy || '-'}</b></p>
+                        <p className="text-sm">Dijalankan: <b>{ev.control_implementation_pct != null ? `${ev.control_implementation_pct}%` : '-'}</b></p>
+                      </div>
+                      <AssessBox
+                        title="Residual Risk"
+                        d={{ likelihood: ev.residual_likelihood, impact: ev.residual_impact, score: ev.residual_score, level: levelOfScore(ev.residual_score) }}
+                      />
+                    </div>
+                  </div>
+                ))
               )}
             </div>
           )}
@@ -226,22 +321,114 @@ export default function RiskRegisterDetailPage() {
           {tab === 'treatment' && (
             <div className="space-y-3">
               {!data.categories?.length && <EmptyState title="Belum ada data" />}
+              {canSetFollowUpStatus && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <p className="font-semibold">Penilaian Tindak Lanjut</p>
+                  <p className="mt-1 text-xs">
+                    Isi status untuk {allMitigationItems.length} tindakan mitigasi sebelum Approve/Reject.
+                    {!statusesComplete && ` Belum diisi: ${allMitigationItems.filter((it) => !statusOf(it)).length} item.`}
+                  </p>
+                  <button
+                    className="btn-primary btn-sm mt-2"
+                    disabled={!statusesComplete || busy}
+                    onClick={saveFollowUpStatuses}
+                  >
+                    {busy ? 'Menyimpan...' : 'Simpan Status Tindak Lanjut'}
+                  </button>
+                </div>
+              )}
               {(data.categories || []).map((cat) =>
-                cat.events.map((ev) =>
-                  ev.causes.map((cs) => (
-                    <div key={cs.id} className="rounded-lg border border-slate-200 p-4">
-                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-sm font-semibold text-slate-700">
-                          {cat.category_name} / {ev.name} / {cs.name}
-                        </p>
-                        <LevelBadge level={cs.after?.level} score={cs.after?.score} />
-                      </div>
-                      <p className="text-xs font-semibold uppercase text-slate-400">Risk Treatment</p>
-                      <p className="text-sm font-semibold text-primary-700">{cs.treatment_name || '-'}</p>
-                      <p className="mt-1 whitespace-pre-wrap text-sm text-slate-600">{cs.mitigation_description || '-'}</p>
+                (cat.events || []).map((ev) => (
+                  <div key={ev.id} className="rounded-lg border border-slate-200 p-4">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-slate-700">{cat.category_name} / {ev.name}</p>
+                      <LevelBadge level={levelOfScore(ev.after_score)} score={ev.after_score} />
                     </div>
-                  ))
-                )
+                    <p className="text-xs font-semibold uppercase text-slate-400">Risk Treatment (Mitigasi)</p>
+                    {(() => {
+                      const items = parseMitigations(ev.mitigation_items);
+                      if (!items.length) return <p className="mt-1 text-sm text-slate-400">-</p>;
+                      return (
+                        <ol className="mt-1 list-decimal space-y-3 pl-5 text-sm text-slate-600">
+                          {items.map((it, i) => (
+                            <li key={it.id || i} className="space-y-1">
+                              <div className="font-medium">{it.description}</div>
+                              {it.follow_up && (
+                                <div className="text-xs text-slate-500">Tindak lanjut: {it.follow_up}</div>
+                              )}
+                              <div className="flex flex-wrap items-center gap-2 text-xs">
+                                <span className="font-semibold text-slate-500">Status:</span>
+                                {canSetFollowUpStatus ? (
+                                  <select
+                                    className="input w-auto py-1 text-xs"
+                                    value={statusOf(it) || ''}
+                                    onChange={(e) => setFollowUpDraft((d) => ({ ...d, [it.id]: e.target.value }))}
+                                  >
+                                    <option value="">- pilih -</option>
+                                    {FOLLOW_UP_STATUS_OPTIONS.map((o) => (
+                                      <option key={o.value} value={o.value}>{o.label}</option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <span className={it.follow_up_status ? 'font-semibold text-primary-700' : 'text-slate-400'}>
+                                    {it.follow_up_status ? statusLabel(it.follow_up_status) : 'Belum dinilai'}
+                                  </span>
+                                )}
+                              </div>
+                              {(it.documents || []).length > 0 && (
+                                <div className="text-xs">
+                                  <span className="font-semibold text-slate-500">Bukti:</span>{' '}
+                                  {it.documents.map((d) => (
+                                    <button
+                                      key={d.id}
+                                      type="button"
+                                      className="mr-2 text-primary-700 hover:underline"
+                                      onClick={() => downloadDocument(id, d.id, d.original_name)}
+                                    >
+                                      {d.original_name}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                              {(it.follow_up_history || []).length > 0 && (
+                                <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
+                                  <p className="font-semibold text-slate-500">Riwayat Tindak Lanjut</p>
+                                  {it.follow_up_history.map((h, hi) => (
+                                    <div key={hi} className="mt-1 border-t border-slate-200 pt-1 first:border-0 first:pt-0">
+                                      <p>
+                                        Tindak lanjut: {h.follow_up || '-'} · Status:{' '}
+                                        {h.follow_up_status ? statusLabel(h.follow_up_status) : '-'}
+                                      </p>
+                                      <p className="text-slate-500">
+                                        {h.action} · {h.reason || '-'} ·{' '}
+                                        {h.archived_at ? new Date(h.archived_at).toLocaleString('id-ID') : '-'}
+                                      </p>
+                                      {(h.documents || []).map((d) => (
+                                        <button
+                                          key={d.id}
+                                          type="button"
+                                          className="mr-2 text-primary-700 hover:underline"
+                                          onClick={() => downloadDocument(id, d.id, d.original_name)}
+                                        >
+                                          {d.original_name}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                        </ol>
+                      );
+                    })()}
+                    <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-500">
+                      <span>Inherent: {ev.inherent_likelihood} × {ev.inherent_impact} = {ev.inherent_score}</span>
+                      <span>Residual: {ev.residual_likelihood} × {ev.residual_impact} = {ev.residual_score}</span>
+                      <span>After: {ev.after_likelihood} × {ev.after_impact} = {ev.after_score}</span>
+                    </div>
+                  </div>
+                ))
               )}
             </div>
           )}
@@ -279,6 +466,7 @@ export default function RiskRegisterDetailPage() {
                   key={m.id}
                   no={`v${m.version}`}
                   title={`${ACTION_LABEL[m.action] || m.action} — ${m.approval_status.replaceAll('_', ' ')}`}
+                  open={openVersions === m.id}
                   defaultOpen={openVersions === m.id}
                   onToggle={() => setOpenVersions(openVersions === m.id ? null : m.id)}
                 >
@@ -302,11 +490,29 @@ export default function RiskRegisterDetailPage() {
                       return snap.items.map((it, i) => (
                         <div key={i} className="rounded border border-slate-200 bg-slate-50 p-3 text-sm">
                           <p className="text-xs text-slate-400">{it.category} / {it.event}</p>
-                          <p className="font-semibold text-slate-700">{it.cause}</p>
-                          <p className="text-primary-700"><b>{it.treatment}</b></p>
-                          <p className="mt-1 whitespace-pre-wrap text-slate-600">{it.mitigation_description}</p>
+                          {(it.causes || []).map((cs, ci) => (
+                            <p key={ci} className="text-slate-700">
+                              {cs.name}
+                              {cs.severity_description ? ` — ${cs.severity_description}` : ''}
+                              {cs.rp_amount != null ? ` (Rp ${Number(cs.rp_amount).toLocaleString('id-ID')})` : ''}
+                              {cs.work_unit ? ` · Unit: ${cs.work_unit}` : ''}
+                            </p>
+                          ))}
+                          <p className="mt-1 text-xs font-semibold uppercase text-slate-400">Mitigasi</p>
+                          <ol className="list-decimal pl-5 text-slate-600">
+                            {(it.mitigation_items || []).map((mi, mii) => (
+                              <li key={mii}>
+                                {typeof mi === 'string' ? mi : mi.description}
+                                {typeof mi !== 'string' && mi.follow_up && (
+                                  <span className="block text-xs text-slate-500">Tindak lanjut: {mi.follow_up}</span>
+                                )}
+                              </li>
+                            ))}
+                          </ol>
                           <p className="mt-1 text-xs text-slate-500">
-                            Risk After Mitigation: {it.after?.likelihood} × {it.after?.impact} = {it.after?.score}
+                            Inherent: {it.inherent?.likelihood} × {it.inherent?.impact} = {it.inherent?.score} ·
+                            Residual: {it.residual?.likelihood} × {it.residual?.impact} = {it.residual?.score} ·
+                            After: {it.after?.likelihood} × {it.after?.impact} = {it.after?.score}
                           </p>
                         </div>
                       ));
@@ -393,7 +599,14 @@ export default function RiskRegisterDetailPage() {
 }
 
 function AssessBox({ title, d }) {
-  if (!d) return null;
+  if (!d || d.score === null || d.score === undefined) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <p className="mb-2 text-xs font-bold uppercase text-slate-500">{title}</p>
+        <p className="text-sm text-slate-400">-</p>
+      </div>
+    );
+  }
   return (
     <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
       <p className="mb-2 text-xs font-bold uppercase text-slate-500">{title}</p>

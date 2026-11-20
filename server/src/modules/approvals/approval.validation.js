@@ -1,4 +1,5 @@
 const { body, param, query } = require('express-validator');
+const { FOLLOW_UP_STATUS } = require('../../config/status');
 
 const idRule = param('id').isInt({ min: 1 }).withMessage('Id tidak valid');
 
@@ -12,4 +13,11 @@ const queueRules = [
   query('limit').optional().isInt({ min: 1, max: 100 }),
 ];
 
-module.exports = { idRule, rejectRules, queueRules };
+const followUpStatusRules = [
+  idRule,
+  body('items').isArray({ min: 1 }).withMessage('Minimal 1 status tindak lanjut wajib dikirim'),
+  body('items.*.itemId').notEmpty().withMessage('Item mitigasi wajib dipilih'),
+  body('items.*.status').isIn(Object.values(FOLLOW_UP_STATUS)).withMessage('Status tindak lanjut tidak valid'),
+];
+
+module.exports = { idRule, rejectRules, queueRules, followUpStatusRules };

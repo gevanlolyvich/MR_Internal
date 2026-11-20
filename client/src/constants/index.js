@@ -1,4 +1,3 @@
-// Konstanta status — sinkron dengan backend src/config/status.js
 
 export const STATUS = {
   DRAFT: 'DRAFT',
@@ -53,11 +52,10 @@ export const SECTIONS = [
   { no: '01', key: 'objective', title: 'Objective & Owner' },
   { no: '02', key: 'identification', title: 'Risk Identification' },
   { no: '03', key: 'cause', title: 'Risk Cause & Source' },
-  { no: '04', key: 'severity', title: 'Severity' },
-  { no: '05', key: 'inherent', title: 'Inherent Risk' },
-  { no: '06', key: 'control', title: 'Existing Control' },
-  { no: '07', key: 'residual', title: 'Residual Risk' },
-  { no: '08', key: 'treatment', title: 'Risk Treatment' },
-  { no: '09', key: 'after', title: 'Risk After Mitigation' },
-  { no: '10', key: 'review', title: 'Review & Submit' },
+  { no: '04', key: 'inherent', title: 'Inherent Risk' },
+  { no: '05', key: 'control', title: 'Existing Control' },
+  { no: '06', key: 'residual', title: 'Residual Risk' },
+  { no: '07', key: 'treatment', title: 'Risk Treatment' },
+  { no: '08', key: 'after', title: 'Risk After Mitigation' },
+  { no: '09', key: 'review', title: 'Review & Submit' },
 ];

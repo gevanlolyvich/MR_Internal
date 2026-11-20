@@ -1,29 +1,22 @@
+
 const { query, withTransaction } = require('../../db/pool');
 
 const SCORE_SUB = {
-  inherent: `(SELECT MAX(cs.inherent_score) FROM risk_register_categories c
+  inherent: `(SELECT MAX(e.inherent_score) FROM risk_register_categories c
         JOIN risk_register_events e ON e.category_row_id = c.id
-        JOIN risk_register_causes cs ON cs.event_row_id = e.id
        WHERE c.risk_register_id = rr.id)`,
-  residual: `(SELECT MAX(cs.residual_score) FROM risk_register_categories c
+  residual: `(SELECT MAX(e.residual_score) FROM risk_register_categories c
         JOIN risk_register_events e ON e.category_row_id = c.id
-        JOIN risk_register_causes cs ON cs.event_row_id = e.id
        WHERE c.risk_register_id = rr.id)`,
-  after: `(SELECT MAX(cs.after_score) FROM risk_register_categories c
+  after: `(SELECT MAX(e.after_score) FROM risk_register_categories c
         JOIN risk_register_events e ON e.category_row_id = c.id
-        JOIN risk_register_causes cs ON cs.event_row_id = e.id
        WHERE c.risk_register_id = rr.id)`,
 };
 
-/**
- * Daftar Risk Register dengan filter + agregasi skor per register.
- * scope: { role, userId } — MR all, Officer miliknya, Owner miliknya (read-only).
- */
 const findList = async (filters = {}, scope = {}, pagination = {}) => {
   const where = [];
   const params = [];
 
-  // --- Scope akses ---
   if (scope.role === 'RISK_OFFICER') {
     where.push('rr.risk_officer_id = ?');
     params.push(scope.userId);
@@ -32,7 +25,6 @@ const findList = async (filters = {}, scope = {}, pagination = {}) => {
     params.push(scope.userId);
   }
 
-  // --- Filter ---
   if (filters.year) {
     where.push('rr.year = ?');
     params.push(filters.year);
@@ -61,7 +53,6 @@ const findList = async (filters = {}, scope = {}, pagination = {}) => {
     params.push(filters.category);
   }
   if (filters.level) {
-    // Level memakai Risk After Mitigation (skor akhir)
     where.push(
       `EXISTS (SELECT 1 FROM risk_level_master lm
                 WHERE lm.level = ?
@@ -121,8 +112,6 @@ const findList = async (filters = {}, scope = {}, pagination = {}) => {
   return { rows, total };
 };
 
-/** Header register + nama relasi */
-/** conn opsional: gunakan saat dibaca di dalam transaksi (baca write sendiri) */
 const findHeader = async (id, conn = null) => {
   const runner = conn || { query };
   const [rows] = await runner.query(
@@ -139,7 +128,6 @@ const findHeader = async (id, conn = null) => {
   return rows[0] || null;
 };
 
-/** Nested lengkap: category -> event -> cause (dengan label master). conn opsional di dalam transaksi */
 const findNested = async (id, conn = null) => {
   const runner = conn || { query };
   const [cats] = await runner.query(
@@ -155,7 +143,12 @@ const findNested = async (id, conn = null) => {
 
   const catIds = cats.map((c) => c.id);
   const [events] = await runner.query(
-    `SELECT e.id, e.category_row_id, e.name, e.sort_order
+    `SELECT e.id, e.category_row_id, e.name, e.sort_order,
+            e.inherent_likelihood, e.inherent_impact, e.inherent_score,
+            e.control_present, e.control_adequacy, e.control_implementation_pct,
+            e.residual_likelihood, e.residual_impact, e.residual_score,
+            e.after_likelihood, e.after_impact, e.after_score,
+            e.mitigation_items
        FROM risk_register_events e
       WHERE e.category_row_id IN (${catIds.map(() => '?').join(',')})
       ORDER BY e.sort_order ASC, e.id ASC`,
@@ -167,13 +160,9 @@ const findNested = async (id, conn = null) => {
     const evIds = events.map((e) => e.id);
     [causes] = await runner.query(
       `SELECT cs.*,
-              rs.code AS source_code, rs.name AS source_name,
-              sl.description AS severity_label, sl.score AS severity_score, sl.rp_value AS severity_rp,
-              tr.code AS treatment_code, tr.name AS treatment_name
+              rs.code AS source_code, rs.name AS source_name
          FROM risk_register_causes cs
          LEFT JOIN risk_sources rs ON rs.id = cs.source_id
-         LEFT JOIN severity_levels sl ON sl.id = cs.severity_id
-         LEFT JOIN risk_treatments tr ON tr.id = cs.treatment_id
         WHERE cs.event_row_id IN (${evIds.map(() => '?').join(',')})
         ORDER BY cs.sort_order ASC, cs.id ASC`,
       evIds
@@ -191,7 +180,6 @@ const findNested = async (id, conn = null) => {
   }));
 };
 
-/** Insert header + nested dalam satu transaksi (conn sudah dalam transaction) */
 const insertRegister = async (conn, header) => {
   const [result] = await conn.query(
     `INSERT INTO risk_registers
@@ -211,7 +199,6 @@ const insertRegister = async (conn, header) => {
   return result.insertId;
 };
 
-/** Ganti seluruh isi nested (delete + insert) — dipakai saat update */
 const replaceNested = async (conn, registerId, categories) => {
   await conn.query('DELETE FROM risk_register_categories WHERE risk_register_id = ?', [registerId]);
 
@@ -226,8 +213,32 @@ const replaceNested = async (conn, registerId, categories) => {
     let evOrder = 0;
     for (const ev of cat.events || []) {
       const [evRes] = await conn.query(
-        'INSERT INTO risk_register_events (category_row_id, name, sort_order) VALUES (?, ?, ?)',
-        [categoryRowId, ev.name, evOrder++]
+        `INSERT INTO risk_register_events
+           (category_row_id, name, sort_order,
+            inherent_likelihood, inherent_impact, inherent_score,
+            control_present, control_adequacy, control_implementation_pct,
+            residual_likelihood, residual_impact, residual_score,
+            after_likelihood, after_impact, after_score,
+            mitigation_items)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          categoryRowId,
+          ev.name,
+          evOrder++,
+          ev.inherent ? ev.inherent.likelihood : null,
+          ev.inherent ? ev.inherent.impact : null,
+          ev.inherent ? ev.inherent.score : null,
+          ev.control ? ev.control.present : null,
+          ev.control ? ev.control.adequacy : null,
+          ev.control ? ev.control.implementation : null,
+          ev.residual ? ev.residual.likelihood : null,
+          ev.residual ? ev.residual.impact : null,
+          ev.residual ? ev.residual.score : null,
+          ev.after ? ev.after.likelihood : null,
+          ev.after ? ev.after.impact : null,
+          ev.after ? ev.after.score : null,
+          ev.mitigation_items ? JSON.stringify(ev.mitigation_items) : null,
+        ]
       );
       const eventRowId = evRes.insertId;
 
@@ -235,35 +246,16 @@ const replaceNested = async (conn, registerId, categories) => {
       for (const cs of ev.causes || []) {
         await conn.query(
           `INSERT INTO risk_register_causes
-             (event_row_id, name, sort_order, source_id, severity_id, severity_description, rp_amount,
-              inherent_likelihood, inherent_impact, inherent_score,
-              control_present, control_adequacy, control_implementation_pct,
-              residual_likelihood, residual_impact, residual_score,
-              treatment_id, mitigation_description,
-              after_likelihood, after_impact, after_score)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (event_row_id, name, sort_order, source_id, severity_description, rp_amount, work_unit)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             eventRowId,
             cs.name,
             csOrder++,
             cs.source_id ?? null,
-            cs.severity_id ?? null,
             cs.severity_description ?? null,
             cs.rp_amount ?? null,
-            cs.inherent_likelihood,
-            cs.inherent_impact,
-            cs.inherent_score,
-            cs.control_present,
-            cs.control_adequacy,
-            cs.control_implementation_pct,
-            cs.residual_likelihood,
-            cs.residual_impact,
-            cs.residual_score,
-            cs.treatment_id ?? null,
-            cs.mitigation_description ?? null,
-            cs.after_likelihood,
-            cs.after_impact,
-            cs.after_score,
+            cs.work_unit ?? null,
           ]
         );
       }
@@ -271,7 +263,6 @@ const replaceNested = async (conn, registerId, categories) => {
   }
 };
 
-/** Generate kode RISK-YYYY-NNNN (locked dalam transaksi) */
 const nextRiskCode = async (conn, year) => {
   await conn.query(
     `INSERT INTO risk_code_counters (year, last_seq) VALUES (?, 1)
@@ -293,10 +284,6 @@ const updateHeader = async (conn, id, fields) => {
   return result.affectedRows;
 };
 
-/**
- * Update status optimistic: hanya berhasil jika status lama sesuai.
- * Mengembalikan affectedRows (0 = konflik / approval ganda).
- */
 const updateStatusGuarded = async (conn, id, expectedStatus, newStatus, extra = {}) => {
   const extraKeys = Object.keys(extra);
   const setSql = [`status = ?`, ...extraKeys.map((k) => `\`${k}\` = ?`)];
@@ -372,7 +359,6 @@ const findAuditForRegister = async (id) => {
   return rows;
 };
 
-/** Owner aktif pada branch (validasi backend) */
 const findValidOwner = async (ownerId, branchId) => {
   const [rows] = await query(
     `SELECT id FROM users
@@ -387,12 +373,21 @@ const softDelete = async (id) => {
   return result.affectedRows;
 };
 
+const updateEventMitigationItems = async (conn, eventId, items) => {
+  const [result] = await conn.query(
+    'UPDATE risk_register_events SET mitigation_items = ? WHERE id = ?',
+    [JSON.stringify(items || []), eventId]
+  );
+  return result.affectedRows;
+};
+
 module.exports = {
   findList,
   findHeader,
   findNested,
   insertRegister,
   replaceNested,
+  updateEventMitigationItems,
   nextRiskCode,
   updateHeader,
   updateStatusGuarded,

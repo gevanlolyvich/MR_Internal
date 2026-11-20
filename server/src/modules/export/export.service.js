@@ -15,6 +15,7 @@ const HEADER_BLUE = 'FF1D4ED8';
 const SUBHEADER_BLUE = 'FF2563EB';
 const GROUP_COLORS = {
   register: 'FFE2E8F0',
+  severity: 'FFFFEDD5',
   inherent: 'FFFEF3C7',
   control: 'FFE0F2FE',
   residual: 'FFECFDF5',
@@ -31,9 +32,10 @@ const COLUMNS = [
   { group: 'register', title: 'Risk Event', width: 30, key: 'event' },
   { group: 'register', title: 'Risk Cause', width: 30, key: 'cause' },
   { group: 'register', title: 'Risk Source', width: 14, key: 'source' },
-  { group: 'register', title: 'Severity', width: 10, key: 'severity' },
-  { group: 'register', title: 'Description', width: 26, key: 'severity_description' },
-  { group: 'register', title: 'Rp', width: 16, key: 'rp' },
+  { group: 'register', title: 'Unit Kerja / Unit Usaha', width: 24, key: 'work_unit' },
+
+  { group: 'severity', title: 'Description', width: 26, key: 'severity_description' },
+  { group: 'severity', title: 'Rp', width: 16, key: 'rp' },
 
   { group: 'inherent', title: 'Inherent Likelihood', width: 12, key: 'inh_l' },
   { group: 'inherent', title: 'Inherent Impact', width: 12, key: 'inh_i' },
@@ -48,7 +50,9 @@ const COLUMNS = [
   { group: 'residual', title: 'Residual Risk Level', width: 16, key: 'res_level' },
 
   { group: 'treatment', title: 'Risk Treatment', width: 20, key: 'treatment' },
-  { group: 'treatment', title: 'Mitigation Description', width: 45, key: 'mitigation' },
+  { group: 'treatment', title: 'Tindak Lanjut', width: 45, key: 'follow_up' },
+  { group: 'treatment', title: 'Status Tindak Lanjut', width: 26, key: 'follow_up_status' },
+  { group: 'treatment', title: 'Bukti Dokumen', width: 34, key: 'documents' },
 
   { group: 'after', title: 'After Mitigation Likelihood', width: 14, key: 'aft_l' },
   { group: 'after', title: 'After Mitigation Impact', width: 14, key: 'aft_i' },
@@ -62,6 +66,7 @@ const COLUMNS = [
 
 const GROUP_LABEL = {
   register: 'RISK REGISTER',
+  severity: 'SEVERITY',
   inherent: 'INHERENT RISK',
   control: 'EXISTING CONTROL',
   residual: 'RESIDUAL RISK',
@@ -78,6 +83,12 @@ const STATUS_LABEL = {
   REJECTED_BY_MR: 'Rejected by MR',
   APPROVED: 'Approved',
   ARCHIVED: 'Archived',
+};
+
+const FOLLOW_UP_STATUS_LABEL = {
+  BELUM_MEMADAI: 'Belum Memadai',
+  TIDAK_DAPAT_DITINDAKLANJUTI: 'Tidak Dapat Ditindaklanjuti',
+  SELESAI: 'Selesai',
 };
 
 const buildWhere = (filters) => {
@@ -111,6 +122,20 @@ const buildWhere = (filters) => {
 };
 
 /** Flatten register -> baris Excel per Risk Cause */
+
+const parseMitigation = (v) => {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    try {
+      const p = JSON.parse(v);
+      return Array.isArray(p) ? p : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
 const flattenRows = async (registers, levels) => {
   const rows = [];
   for (const reg of registers) {
@@ -120,38 +145,56 @@ const flattenRows = async (registers, levels) => {
       return f ? f.level : '-';
     };
     for (const cat of nested) {
-      for (const ev of cat.events) {
-        for (const cs of ev.causes) {
-          rows.push({
-            risk_code: reg.risk_code,
-            objective: reg.objective,
-            category: cat.category_name,
-            event: ev.name,
-            cause: cs.name,
-            source: cs.source_name || '-',
-            severity: cs.severity_label ? `S${cs.severity_score}` : '-',
-            severity_description: cs.severity_description || '-',
-            rp: cs.rp_amount ? Number(cs.rp_amount) : null,
-            inh_l: cs.inherent_likelihood,
-            inh_i: cs.inherent_impact,
-            inh_level: levelOf(cs.inherent_score),
-            control_present: cs.control_present,
-            control_adequacy: cs.control_adequacy,
-            control_pct: `${cs.control_implementation_pct}%`,
-            res_l: cs.residual_likelihood,
-            res_i: cs.residual_impact,
-            res_level: levelOf(cs.residual_score),
-            treatment: cs.treatment_name || '-',
-            mitigation: cs.mitigation_description || '-',
-            aft_l: cs.after_likelihood,
-            aft_i: cs.after_impact,
-            aft_level: levelOf(cs.after_score),
-            owner: reg.owner_name,
-            officer: reg.officer_name,
-            branch: reg.branch_name,
-            status: STATUS_LABEL[reg.status] || reg.status,
-          });
-        }
+      for (const ev of cat.events || []) {
+        const causes = ev.causes || [];
+        const mitItems = parseMitigation(ev.mitigation_items);
+        rows.push({
+          risk_code: reg.risk_code,
+          objective: reg.objective,
+          category: cat.category_name,
+          event: ev.name,
+          cause: causes.length ? causes.map((c) => c.name).join(', ') : '-',
+          source: causes.length ? (causes[0].source_name || '-') : '-',
+          severity: '-',
+          severity_description: causes.length ? (causes[0].severity_description || '-') : '-',
+          rp: causes.length ? (causes[0].rp_amount ? Number(causes[0].rp_amount) : null) : null,
+          work_unit: causes.length ? (causes[0].work_unit || '-') : '-',
+          inh_l: ev.inherent_likelihood,
+          inh_i: ev.inherent_impact,
+          inh_level: levelOf(ev.inherent_score),
+          control_present: ev.control_present,
+          control_adequacy: ev.control_adequacy,
+          control_pct: ev.control_implementation_pct !== null ? `${ev.control_implementation_pct}%` : null,
+          res_l: ev.residual_likelihood,
+          res_i: ev.residual_impact,
+          res_level: levelOf(ev.residual_score),
+          treatment: mitItems.length ? mitItems.map((m) => (typeof m === 'string' ? m : m.description)).join(' | ') : '-',
+          follow_up: mitItems.length
+            ? (mitItems
+                .map((m) => (typeof m === 'string' ? '' : (m.follow_up || '')))
+                .filter(Boolean)
+                .join(' | ') || '-')
+            : '-',
+          follow_up_status: mitItems.length
+            ? (mitItems
+                .map((m) => (typeof m === 'string' ? '' : FOLLOW_UP_STATUS_LABEL[m.follow_up_status] || ''))
+                .filter(Boolean)
+                .join(' | ') || '-')
+            : '-',
+          documents: mitItems.length
+            ? (mitItems
+                .flatMap((m) => (typeof m === 'string' ? [] : m.documents || []))
+                .map((d) => d.original_name)
+                .join(' | ') || '-')
+            : '-',
+          aft_l: ev.after_likelihood,
+          aft_i: ev.after_impact,
+          aft_level: levelOf(ev.after_score),
+          owner: reg.owner_name,
+          officer: reg.officer_name,
+          branch: reg.branch_name,
+          status: STATUS_LABEL[reg.status] || reg.status,
+        });
       }
     }
   }
@@ -185,10 +228,9 @@ const exportRiskRegister = async (filters) => {
   ws.columns = COLUMNS.map((c) => ({ key: c.key, width: c.width }));
 
   const lastCol = COLUMNS.length;
-  const startRow = 4; // header bertingkat: row1 title, row2 group, row3 column
+  const startRow = 4;
   const firstDataRow = startRow + 1;
 
-  // --- Row 1: judul ---
   ws.mergeCells(1, 1, 1, lastCol);
   const titleCell = ws.getCell(1, 1);
   titleCell.value = 'RISK REGISTER — JXB RISK MANAGEMENT SYSTEM';
@@ -197,7 +239,6 @@ const exportRiskRegister = async (filters) => {
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   ws.getRow(1).height = 26;
 
-  // --- Row 2: info filter ---
   ws.mergeCells(2, 1, 2, lastCol);
   const filterParts = [];
   if (filters.year) filterParts.push(`Year: ${filters.year}`);
@@ -208,7 +249,6 @@ const exportRiskRegister = async (filters) => {
   infoCell.font = { italic: true, size: 10 };
   infoCell.alignment = { horizontal: 'left', vertical: 'middle' };
 
-  // --- Row 2 (group header): merge per group ---
   let colIdx = 1;
   const groupStarts = [];
   while (colIdx <= lastCol) {
@@ -231,7 +271,6 @@ const exportRiskRegister = async (filters) => {
     colIdx += span;
   }
 
-  // --- Row 3: kolom header ---
   const headerRow = ws.getRow(startRow);
   COLUMNS.forEach((c, i) => {
     const cell = headerRow.getCell(i + 1);
@@ -249,7 +288,6 @@ const exportRiskRegister = async (filters) => {
   headerRow.height = 34;
   ws.getRow(3).height = 30;
 
-  // --- Data rows ---
   const border = {
     top: { style: 'thin' },
     left: { style: 'thin' },
@@ -273,13 +311,12 @@ const exportRiskRegister = async (filters) => {
           ? 'center'
           : 'left',
         vertical: 'top',
-        wrapText: ['objective', 'event', 'cause', 'mitigation', 'severity_description'].includes(c.key),
+        wrapText: ['objective', 'event', 'cause', 'severity_description', 'work_unit', 'follow_up', 'documents'].includes(c.key),
       };
       cell.font = { size: 10 };
       cell.border = border;
     });
 
-    // Warna level risk
     ['inh_level', 'res_level', 'aft_level'].forEach((key) => {
       const col = COLUMNS.findIndex((c) => c.key === key) + 1;
       const cell = r.getCell(col);
@@ -292,7 +329,6 @@ const exportRiskRegister = async (filters) => {
     });
   });
 
-  // --- Merge hierarki (Objective / Category / Event / Owner / Officer / Branch / Status berurutan sama) ---
   const mergeKeys = ['risk_code', 'objective', 'category', 'event', 'owner', 'officer', 'branch', 'status'];
   mergeKeys.forEach((key) => {
     const col = COLUMNS.findIndex((c) => c.key === key) + 1;
@@ -320,13 +356,11 @@ const exportRiskRegister = async (filters) => {
     }
   });
 
-  // --- Auto filter pada header kolom ---
   ws.autoFilter = {
     from: { row: startRow, column: 1 },
     to: { row: startRow, column: lastCol },
   };
 
-  // --- Border luar & baris kosong jika tidak ada data ---
   if (!dataRows.length) {
     ws.mergeCells(firstDataRow, 1, firstDataRow, lastCol);
     const empty = ws.getCell(firstDataRow, 1);

@@ -19,7 +19,9 @@ Jalankan **secara manual dan berurutan** (phpMyAdmin → Import, atau mysql clie
 | 2 | `migrations/002_masters.sql` | master: category, treatment, likelihood, impact, risk level, source, severity, risk tolerance |
 | 3 | `migrations/003_risk_register.sql` | risk_code_counters, risk_registers, risk_register_categories, risk_register_events, risk_register_causes |
 | 4 | `migrations/004_workflow.sql` | approval_histories, risk_mitigation_histories, FK notifications → risk_registers |
-| 5 | `seeds/001_seed.sql` | branch, kategori risiko, treatment, likelihood, impact, risk level, source, severity, tolerance, 3 user contoh |
+| 5 | `migrations/005_risk_register_event_level.sql` | Assessment (Inherent/Control/Residual/Treatment/After) pindah ke level **Risk Event**; Severity dihapus dari Risk Cause |
+| 6 | `migrations/006_cause_work_unit.sql` | Kolom `work_unit` (Unit Kerja / Unit Usaha) pada Risk Cause; Tindak Lanjut per item mitigasi (JSON) |
+| 7 | `seeds/001_seed.sql` | branch, kategori risiko, treatment, likelihood, impact, risk level, source, severity, tolerance, 3 user contoh |
 
 ### via phpMyAdmin
 
@@ -36,11 +38,43 @@ C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\001_core.sql
 C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\002_masters.sql
 C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\003_risk_register.sql
 C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\004_workflow.sql
+C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\005_risk_register_event_level.sql
+C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\006_cause_work_unit.sql
 C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\seeds\001_seed.sql
 ```
 
 > Catatan: file dibuat idempoten (`CREATE TABLE IF NOT EXISTS`, `INSERT IGNORE`)
 > kecuali `ALTER TABLE ... ADD CONSTRAINT` di `004_workflow.sql` (jalankan sekali saja).
+
+### Seed data Risk Register (opsional)
+
+`005` **menghapus** kolom assessment lama di Risk Cause, jadi data register lama
+tidak kompatibel. Untuk mengisi contoh data baru (12 register, status beragam):
+
+```bash
+cd server
+node scripts/seed-risk-registers.js
+```
+
+Script ini menghapus register + counter kode terlebih dahulu, lalu membuat ulang
+register dengan struktur event-level (inherent/control/residual/treatment/after
+per event, severity_description + rp_amount + work_unit per cause, dan status
+tindak lanjut per item mitigasi).
+
+### Bukti dokumen tindak lanjut
+
+Fitur upload tidak memerlukan migrasi SQL. Jalankan once:
+
+```bash
+cd server
+npm install
+```
+
+File disimpan di `server/uploads/risk-registers/<registerId>/` (diabaikan git)
+dan hanya dapat diunduh melalui endpoint terautentikasi
+`GET /api/risk-registers/:id/documents/:docId`. Format didukung: gambar
+(JPG/JPEG/PNG/GIF/WebP/BMP), Excel (XLS/XLSX), PowerPoint (PPT/PPTX), PDF,
+dan Word (DOC/DOCX). Maks 5 MB per file, maks 5 file per item mitigasi.
 
 ## Password user seed
 

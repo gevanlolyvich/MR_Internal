@@ -14,24 +14,22 @@ router.get(
     const levels = await getLevels();
     const tolerance = await getTolerance();
 
-    // Jumlah Risk Cause per sel matrix (berdasar Risk After Mitigation)
+    // Jumlah Risk Event per sel matrix (berdasar Risk After Mitigation)
     const [cells] = await query(
-      `SELECT cs.after_likelihood AS likelihood, cs.after_impact AS impact, COUNT(*) AS total
-         FROM risk_register_causes cs
-         JOIN risk_register_events e ON e.id = cs.event_row_id
+      `SELECT e.after_likelihood AS likelihood, e.after_impact AS impact, COUNT(*) AS total
+         FROM risk_register_events e
          JOIN risk_register_categories c ON c.id = e.category_row_id
          JOIN risk_registers rr ON rr.id = c.risk_register_id
-        GROUP BY cs.after_likelihood, cs.after_impact`
+        GROUP BY e.after_likelihood, e.after_impact`
     );
 
     // Jumlah inherent per sel (untuk perbandingan)
     const [inherentCells] = await query(
-      `SELECT cs.inherent_likelihood AS likelihood, cs.inherent_impact AS impact, COUNT(*) AS total
-         FROM risk_register_causes cs
-         JOIN risk_register_events e ON e.id = cs.event_row_id
+      `SELECT e.inherent_likelihood AS likelihood, e.inherent_impact AS impact, COUNT(*) AS total
+         FROM risk_register_events e
          JOIN risk_register_categories c ON c.id = e.category_row_id
          JOIN risk_registers rr ON rr.id = c.risk_register_id
-        GROUP BY cs.inherent_likelihood, cs.inherent_impact`
+        GROUP BY e.inherent_likelihood, e.inherent_impact`
     );
 
     const cellMap = {};

@@ -4,17 +4,14 @@ const { ROLES } = require('../../config/roles');
 const { getTolerance } = require('../../utils/riskLevel');
 
 const SCORE_SUB = {
-  inherent: `(SELECT MAX(cs.inherent_score) FROM risk_register_categories c
+  inherent: `(SELECT MAX(e.inherent_score) FROM risk_register_categories c
         JOIN risk_register_events e ON e.category_row_id = c.id
-        JOIN risk_register_causes cs ON cs.event_row_id = e.id
        WHERE c.risk_register_id = rr.id)`,
-  residual: `(SELECT MAX(cs.residual_score) FROM risk_register_categories c
+  residual: `(SELECT MAX(e.residual_score) FROM risk_register_categories c
         JOIN risk_register_events e ON e.category_row_id = c.id
-        JOIN risk_register_causes cs ON cs.event_row_id = e.id
        WHERE c.risk_register_id = rr.id)`,
-  after: `(SELECT MAX(cs.after_score) FROM risk_register_categories c
+  after: `(SELECT MAX(e.after_score) FROM risk_register_categories c
         JOIN risk_register_events e ON e.category_row_id = c.id
-        JOIN risk_register_causes cs ON cs.event_row_id = e.id
        WHERE c.risk_register_id = rr.id)`,
 };
 

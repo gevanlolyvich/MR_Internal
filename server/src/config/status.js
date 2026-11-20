@@ -8,6 +8,18 @@ const STATUS = Object.freeze({
   ARCHIVED: 'ARCHIVED',
 });
 
+const FOLLOW_UP_STATUS = Object.freeze({
+  BELUM_MEMADAI: 'BELUM_MEMADAI',
+  TIDAK_DAPAT_DITINDAKLANJUTI: 'TIDAK_DAPAT_DITINDAKLANJUTI',
+  SELESAI: 'SELESAI',
+});
+
+const FOLLOW_UP_STATUS_LABEL = {
+  BELUM_MEMADAI: 'Belum Memadai',
+  TIDAK_DAPAT_DITINDAKLANJUTI: 'Tidak Dapat Ditindaklanjuti',
+  SELESAI: 'Selesai',
+};
+
 const ALL_STATUS = Object.values(STATUS);
 
 // Status yang boleh diubah isinya oleh Risk Officer
@@ -27,4 +39,13 @@ const STATUS_LABEL = {
   ARCHIVED: 'Diarsipkan',
 };
 
-module.exports = { STATUS, ALL_STATUS, EDITABLE_STATUS, OWNER_PENDING, MR_PENDING, STATUS_LABEL };
+module.exports = {
+  STATUS,
+  ALL_STATUS,
+  EDITABLE_STATUS,
+  OWNER_PENDING,
+  MR_PENDING,
+  STATUS_LABEL,
+  FOLLOW_UP_STATUS,
+  FOLLOW_UP_STATUS_LABEL,
+};

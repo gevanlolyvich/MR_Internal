@@ -1,3 +1,4 @@
+const path = require('path');
 const asyncHandler = require('../../utils/asyncHandler');
 const service = require('./riskRegister.service');
 const { parsePagination } = require('../../utils/pagination');
@@ -39,6 +40,23 @@ exports.history = asyncHandler(async (req, res) => {
 exports.remove = asyncHandler(async (req, res) => {
   const data = await service.deleteRegister(req.params.id, req);
   res.json({ success: true, data });
+});
+
+exports.uploadDocuments = asyncHandler(async (req, res) => {
+  const data = await service.uploadDocuments(req.params.id, req.params.itemId, req.files, req);
+  res.json({ success: true, data });
+});
+
+exports.removeDocument = asyncHandler(async (req, res) => {
+  const data = await service.removeDocument(req.params.id, req.params.itemId, req.params.docId, req);
+  res.json({ success: true, data });
+});
+
+exports.downloadDocument = asyncHandler(async (req, res) => {
+  const { doc, filePath } = await service.getDocumentForDownload(req.params.id, req.params.docId, req.user);
+  res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `inline; filename="${path.basename(doc.original_name).replace(/"/g, '')}"`);
+  res.sendFile(filePath);
 });
 
 exports.owners = asyncHandler(async (req, res) => {

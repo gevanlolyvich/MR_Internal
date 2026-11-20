@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import clsx from 'clsx';
-import api, { parseError } from '../../api/client';
+import api, { parseError, downloadDocument } from '../../api/client';
 import { Card, PageHeader, Spinner, Field, CollapsibleSection } from '../../components/ui/Common';
 import { LevelBadge } from '../../components/ui/Badges';
 import { ConfirmDialog } from '../../components/ui/Modal';
@@ -15,18 +15,23 @@ const blankCause = () => ({
   key: uid(),
   name: '',
   source_id: '',
-  severity_id: '',
   severity_description: '',
   rp_amount: '',
+  work_unit: '',
+});
+
+const blankMitigationItem = () => ({ key: uid(), description: '', follow_up: '' });
+
+const blankEvent = () => ({
+  key: uid(),
+  name: '',
+  causes: [blankCause()],
   inherent: { likelihood: '', impact: '' },
   control: { present: '', adequacy: '', implementation: '' },
   residual: { likelihood: '', impact: '' },
-  treatment_id: '',
-  mitigation_description: '',
+  mitigation_items: [blankMitigationItem()],
   after: { likelihood: '', impact: '' },
 });
-
-const blankEvent = () => ({ key: uid(), name: '', causes: [blankCause()] });
 const blankCategory = () => ({ key: uid(), category_id: '', events: [blankEvent()] });
 const blankForm = () => ({ objective: '', risk_owner_id: '', categories: [blankCategory()] });
 
@@ -110,20 +115,43 @@ export default function RiskRegisterFormPage() {
                 key: uid(),
                 name: cs.name,
                 source_id: cs.source_id || '',
-                severity_id: cs.severity_id || '',
                 severity_description: cs.severity_description || '',
                 rp_amount: cs.rp_amount ?? '',
-                inherent: { likelihood: cs.inherent_likelihood, impact: cs.inherent_impact },
-                control: {
-                  present: cs.control_present,
-                  adequacy: cs.control_adequacy,
-                  implementation: cs.control_implementation_pct,
-                },
-                residual: { likelihood: cs.residual_likelihood, impact: cs.residual_impact },
-                treatment_id: cs.treatment_id || '',
-                mitigation_description: cs.mitigation_description || '',
-                after: { likelihood: cs.after_likelihood, impact: cs.after_impact },
+                work_unit: cs.work_unit || '',
               })),
+              inherent: {
+                likelihood: ev.inherent_likelihood ?? '',
+                impact: ev.inherent_impact ?? '',
+              },
+              control: {
+                present: ev.control_present || '',
+                adequacy: ev.control_adequacy || '',
+                implementation: ev.control_implementation_pct ?? '',
+              },
+              residual: {
+                likelihood: ev.residual_likelihood ?? '',
+                impact: ev.residual_impact ?? '',
+              },
+              mitigation_items: (() => {
+                let items = ev.mitigation_items;
+                if (typeof items === 'string') {
+                  try { items = JSON.parse(items); } catch { items = []; }
+                }
+                if (!Array.isArray(items) || !items.length) items = [{ description: '' }];
+                return items.map((it) => ({
+                  key: uid(),
+                  id: typeof it === 'string' ? undefined : it?.id,
+                  description: typeof it === 'string' ? it : (it && it.description) || '',
+                  follow_up: typeof it === 'string' ? '' : (it && it.follow_up) || '',
+                  documents: typeof it === 'string' ? [] : it?.documents || [],
+                  follow_up_status: typeof it === 'string' ? null : it?.follow_up_status || null,
+                  follow_up_history: typeof it === 'string' ? [] : it?.follow_up_history || [],
+                }));
+              })(),
+              after: {
+                likelihood: ev.after_likelihood ?? '',
+                impact: ev.after_impact ?? '',
+              },
             })),
           })),
         });
@@ -148,7 +176,16 @@ export default function RiskRegisterFormPage() {
   };
 
   const errFor = (path) => errors.find((e) => e.field === path)?.message;
-  const sectionErrors = (prefix) => errors.filter((e) => e.field.startsWith(prefix));
+  const sectionErrors = (prefix) => {
+    if (prefix === 'categories' || prefix === 'identification') {
+      return errors.filter((e) => e.field.startsWith('categories'));
+    }
+    if (prefix === 'cause') return errors.filter((e) => e.field.includes('.causes['));
+    if (prefix === 'treatment') return errors.filter((e) => e.field.includes('.mitigation_items'));
+    if (prefix === 'objective') return errors.filter((e) => e.field === 'objective');
+    if (prefix === 'risk_owner') return errors.filter((e) => e.field === 'risk_owner_id');
+    return errors.filter((e) => e.field.includes('.' + prefix));
+  };
 
   const scrollTo = (key) => {
     setActive(key);
@@ -175,17 +212,27 @@ export default function RiskRegisterFormPage() {
         ev.causes.forEach((cs, si) => {
           const p = `${ep}.causes[${si}]`;
           if (!cs.name.trim()) push(`${p}.name`, 'Risk Cause wajib diisi');
-          if (!score(cs.inherent.likelihood, cs.inherent.impact)) push(`${p}.inherent.likelihood`, 'Inherent Risk wajib diisi (1-5)');
-          if (!cs.control.present) push(`${p}.control.present`, 'Existing Control wajib dipilih');
-          if (!cs.control.adequacy) push(`${p}.control.adequacy`, 'Control Adequacy wajib dipilih');
-          if (cs.control.implementation === '' || Number(cs.control.implementation) < 0 || Number(cs.control.implementation) > 100) {
-            push(`${p}.control.implementation`, 'Persentase 0-100');
+          if (!String(cs.severity_description || '').trim()) push(`${p}.severity_description`, 'Deskripsi wajib diisi');
+          if (cs.rp_amount === '' || cs.rp_amount === null || cs.rp_amount === undefined || Number.isNaN(Number(cs.rp_amount))) {
+            push(`${p}.rp_amount`, 'Nilai Rp wajib diisi');
+          } else if (Number(cs.rp_amount) < 0) {
+            push(`${p}.rp_amount`, 'Nilai Rp tidak boleh negatif');
           }
-          if (!score(cs.residual.likelihood, cs.residual.impact)) push(`${p}.residual.likelihood`, 'Residual Risk wajib diisi (1-5)');
-          if (!cs.treatment_id) push(`${p}.treatment_id`, 'Risk Treatment wajib dipilih');
-          if (!cs.mitigation_description.trim()) push(`${p}.mitigation_description`, 'Deskripsi mitigasi wajib diisi');
-          if (!score(cs.after.likelihood, cs.after.impact)) push(`${p}.after.likelihood`, 'Risk After Mitigation wajib diisi (1-5)');
+          if (!String(cs.work_unit || '').trim()) push(`${p}.work_unit`, 'Unit Kerja / Unit Usaha wajib diisi');
         });
+        if (!score(ev.inherent.likelihood, ev.inherent.impact)) push(`${ep}.inherent.likelihood`, 'Inherent Risk wajib diisi (1-5)');
+        if (!ev.control.present) push(`${ep}.control.present`, 'Existing Control wajib dipilih');
+        if (!ev.control.adequacy) push(`${ep}.control.adequacy`, 'Control Adequacy wajib dipilih');
+        if (ev.control.implementation === '' || Number(ev.control.implementation) < 0 || Number(ev.control.implementation) > 100) {
+          push(`${ep}.control.implementation`, 'Persentase 0-100');
+        }
+        if (!score(ev.residual.likelihood, ev.residual.impact)) push(`${ep}.residual.likelihood`, 'Residual Risk wajib diisi (1-5)');
+        if (!ev.mitigation_items.length) push(`${ep}.mitigation_items`, 'Minimal 1 item mitigasi wajib diisi');
+        ev.mitigation_items.forEach((mi, mii) => {
+          if (!String(mi.description || '').trim()) push(`${ep}.mitigation_items[${mii}].description`, 'Tindakan mitigasi tidak boleh kosong');
+          if (!String(mi.follow_up || '').trim()) push(`${ep}.mitigation_items[${mii}].follow_up`, 'Tindak lanjut wajib diisi');
+        });
+        if (!score(ev.after.likelihood, ev.after.impact)) push(`${ep}.after.likelihood`, 'Risk After Mitigation wajib diisi (1-5)');
       });
     });
     return errs;
@@ -201,20 +248,27 @@ export default function RiskRegisterFormPage() {
         causes: ev.causes.map((cs) => ({
           name: cs.name,
           source_id: cs.source_id ? Number(cs.source_id) : null,
-          severity_id: cs.severity_id ? Number(cs.severity_id) : null,
           severity_description: cs.severity_description || null,
           rp_amount: cs.rp_amount === '' ? null : Number(cs.rp_amount),
-          inherent: { likelihood: Number(cs.inherent.likelihood), impact: Number(cs.inherent.impact) },
-          control: {
-            present: cs.control.present,
-            adequacy: cs.control.adequacy,
-            implementation: Number(cs.control.implementation),
-          },
-          residual: { likelihood: Number(cs.residual.likelihood), impact: Number(cs.residual.impact) },
-          treatment_id: Number(cs.treatment_id),
-          mitigation_description: cs.mitigation_description,
-          after: { likelihood: Number(cs.after.likelihood), impact: Number(cs.after.impact) },
+          work_unit: cs.work_unit || null,
         })),
+        inherent: { likelihood: Number(ev.inherent.likelihood), impact: Number(ev.inherent.impact) },
+        control: {
+          present: ev.control.present,
+          adequacy: ev.control.adequacy,
+          implementation: Number(ev.control.implementation),
+        },
+        residual: { likelihood: Number(ev.residual.likelihood), impact: Number(ev.residual.impact) },
+        mitigation_items: ev.mitigation_items.map((mi, idx) => ({
+          id: mi.id,
+          description: mi.description,
+          follow_up: mi.follow_up,
+          order: idx + 1,
+          documents: mi.documents || [],
+          follow_up_status: mi.follow_up_status || null,
+          follow_up_history: mi.follow_up_history || [],
+        })),
+        after: { likelihood: Number(ev.after.likelihood), impact: Number(ev.after.impact) },
       })),
     })),
   });
@@ -228,9 +282,8 @@ export default function RiskRegisterFormPage() {
       if (first.includes('inherent')) sec = 'inherent';
       else if (first.includes('residual')) sec = 'residual';
       else if (first.includes('after')) sec = 'after';
-      else if (first.includes('control')) sec = 'control';
-      else if (first.includes('treatment') || first.includes('mitigation')) sec = 'treatment';
-      else if (first.includes('severity')) sec = 'severity';
+      else if (first.includes('control.')) sec = 'control';
+      else if (first.includes('mitigation')) sec = 'treatment';
       else if (first.includes('.causes[')) sec = 'cause';
       else if (first.includes('events[') || first.includes('categories')) sec = 'identification';
       scrollTo(sec);
@@ -271,13 +324,6 @@ export default function RiskRegisterFormPage() {
   const onDoSubmit = async () => {
     setConfirmSubmit(false);
     await save(true);
-  };
-
-  const selScore = (cs, group) => {
-    const s = score(cs[group].likelihood, cs[group].impact);
-    if (s === null) return <span className="text-xs text-slate-400">Belum diisi</span>;
-    const lv = levelOf(s);
-    return <LevelBadge level={lv?.level || '-'} score={s} />;
   };
 
   const lOptions = likelihoods.length ? likelihoods : [{ score: 1, name: 'Jarang' }, { score: 2, name: 'Kecil' }, { score: 3, name: 'Sedang' }, { score: 4, name: 'Besar' }, { score: 5, name: 'Hampir Pasti' }];
@@ -467,7 +513,7 @@ export default function RiskRegisterFormPage() {
               <button
                 type="button"
                 className="btn-secondary btn-sm"
-                onClick={() => mutate((f) => { f.categories[ci].events.push({ key: uid(), name: '', causes: [blankCause()] }); })}
+                onClick={() => mutate((f) => { f.categories[ci].events.push(blankEvent()); })}
               >
                 + Tambah Risk Event
               </button>
@@ -487,15 +533,14 @@ export default function RiskRegisterFormPage() {
         </CollapsibleSection>
       </div>
 
-      {/* Sections per cause */}
+      {/* Event-level sections */}
       {[
         { no: '03', key: 'cause', title: 'Risk Cause & Sumber Risiko' },
-        { no: '04', key: 'severity', title: 'Severity / Dampak' },
-        { no: '05', key: 'inherent', title: 'Inherent Risk' },
-        { no: '06', key: 'control', title: 'Existing Control / Pengendalian yang Ada' },
-        { no: '07', key: 'residual', title: 'Residual Risk' },
-        { no: '08', key: 'treatment', title: 'Risk Treatment' },
-        { no: '09', key: 'after', title: 'Risk After Mitigation' },
+        { no: '04', key: 'inherent', title: 'Inherent Risk' },
+        { no: '05', key: 'control', title: 'Existing Control / Pengendalian yang Ada' },
+        { no: '06', key: 'residual', title: 'Residual Risk' },
+        { no: '07', key: 'treatment', title: 'Risk Treatment' },
+        { no: '08', key: 'after', title: 'Risk After Mitigation' },
       ].map((sec) => (
         <div id={`section-${sec.key}`} key={sec.key}>
           <CollapsibleSection
@@ -508,53 +553,48 @@ export default function RiskRegisterFormPage() {
             {form.categories.length === 0 && <p className="text-sm text-slate-400">Tambahkan kategori pada section 02.</p>}
             {form.categories.map((cat, ci) =>
               cat.events.map((ev, ei) => (
-                <div key={`${cat.key}-${ev.key}`} className="mb-4">
-                  {(cat.events.length > 1 || form.categories.length > 1) && (
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      {cat.category_id ? categories.find((c) => String(c.id) === String(cat.category_id))?.name : 'Kategori'} / {ev.name || 'Event tanpa nama'}
-                    </p>
-                  )}
-                  {ev.causes.map((cs, si) => (
-                    <CauseFields
-                      key={cs.key}
+                <div key={`${cat.key}-${ev.key}`} className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    {cat.category_id ? categories.find((c) => String(c.id) === String(cat.category_id))?.name : 'Kategori'} / {ev.name || 'Event tanpa nama'}
+                  </p>
+                  {sec.key === 'cause' ? (
+                    <>
+                      {ev.causes.map((cs, si) => (
+                        <CauseFields
+                          key={cs.key}
+                          ci={ci}
+                          ei={ei}
+                          si={si}
+                          cs={cs}
+                          mutate={mutate}
+                          errFor={errFor}
+                          sources={sources}
+                          showRemove={ev.causes.length > 1}
+                        />
+                      ))}
+                      <button
+                        type="button"
+                        className="btn-secondary btn-sm"
+                        onClick={() => mutate((f) => { f.categories[ci].events[ei].causes.push(blankCause()); })}
+                      >
+                        + Tambah Risk Cause
+                      </button>
+                    </>
+                  ) : (
+                    <EventAssessmentFields
                       sec={sec.key}
                       ci={ci}
                       ei={ei}
-                      si={si}
-                      cs={cs}
-                      form={form}
+                      ev={ev}
                       mutate={mutate}
                       errFor={errFor}
                       lOptions={lOptions}
                       iOptions={iOptions}
-                      sources={sources}
-                      severities={severities}
-                      treatments={treatments}
-                      levels={levels}
                       levelOf={levelOf}
-                      selScore={selScore}
-                      evName={ev.name}
-                      showRemove={ev.causes.length > 1}
+                      registerId={id}
+                      toast={toast}
                     />
-                  ))}
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="btn-secondary btn-sm"
-                      onClick={() => mutate((f) => { f.categories[ci].events[ei].causes.push(blankCause()); })}
-                    >
-                      + Tambah Risk Cause
-                    </button>
-                    {sec.key === 'cause' && (
-                      <button
-                        type="button"
-                        className="btn-secondary btn-sm"
-                        onClick={() => mutate((f) => { f.categories[ci].events.splice(ei, 1); if (!f.categories[ci].events.length) f.categories[ci].events.push(blankEvent()); })}
-                      >
-                        Hapus Event ini
-                      </button>
-                    )}
-                  </div>
+                  )}
                 </div>
               ))
             )}
@@ -562,10 +602,10 @@ export default function RiskRegisterFormPage() {
         </div>
       ))}
 
-      {/* 10 Review & Submit */}
+      {/* 09 Review & Submit */}
       <div id="section-review">
         <CollapsibleSection
-          no="10"
+          no="09"
           title="Review & Submit"
           open={openMap.review}
           onToggle={() => setOpenMap((m) => ({ ...m, review: !m.review }))}
@@ -614,239 +654,298 @@ export default function RiskRegisterFormPage() {
 }
 
 /* ---------------------------------------------------------------
-   Input per cause untuk masing-masing section (satu form yang sama)
+   Risk Cause (identifikasi) - level cause
 --------------------------------------------------------------- */
-function CauseFields({
-  sec, ci, ei, si, cs, form, mutate, errFor, lOptions, iOptions, sources, severities,
-  treatments, levelOf, selScore, showRemove, evName,
-}) {
+function CauseFields({ ci, ei, si, cs, mutate, errFor, sources, showRemove }) {
   const p = `categories[${ci}].events[${ei}].causes[${si}]`;
   const set = (fn) => mutate((f) => fn(f.categories[ci].events[ei].causes[si]));
 
-  if (sec === 'cause') {
-    return (
-      <div className="mb-3 rounded border border-slate-200 bg-white p-3">
-        <div className="mb-2 flex items-center justify-between">
-          <p className="text-xs font-bold text-slate-500">CAUSE: {evName || '-'}</p>
-          {showRemove && (
-            <button
-              type="button"
-              className="text-xs font-semibold text-jxb-red hover:underline"
-              onClick={() => mutate((f) => { const arr = f.categories[ci].events[ei].causes; arr.splice(si, 1); if (!arr.length) arr.push(blankCauseLocal()); })}
-            >
-              Hapus cause
-            </button>
-          )}
-        </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          <Field label={`Risk Cause ${si + 1}`} required error={errFor(`${p}.name`)}>
-            <input
-              className="input"
-              placeholder="Penyebab risiko"
-              value={cs.name}
-              onChange={(e) => set((c) => { c.name = e.target.value; })}
-            />
-          </Field>
-          <Field label="Sumber Risiko">
-            <select
-              className="input"
-              value={cs.source_id}
-              onChange={(e) => set((c) => { c.source_id = e.target.value; })}
-            >
-              <option value="">— pilih —</option>
-              {sources.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
-      </div>
-    );
-  }
-
-  if (sec === 'severity') {
-    return (
-      <div className="mb-3 rounded border border-slate-200 bg-white p-3">
-        <p className="mb-2 text-xs font-bold text-slate-500">CAUSE: {cs.name || '(belum diisi)'}</p>
-        <div className="grid gap-3 md:grid-cols-3">
-          <Field label="Severity">
-            <select
-              className="input"
-              value={cs.severity_id}
-              onChange={(e) => {
-                const id = e.target.value;
-                const sev = severities.find((s) => String(s.id) === String(id));
-                set((c) => {
-                  c.severity_id = id;
-                  if (sev) {
-                    if (!c.severity_description) c.severity_description = sev.description;
-                    if (c.rp_amount === '' && sev.rp_value) c.rp_amount = Number(sev.rp_value);
-                  }
-                });
-              }}
-            >
-              <option value="">— pilih —</option>
-              {severities.map((s) => (
-                <option key={s.id} value={s.id}>S{s.score} — {s.description}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Deskripsi">
-            <input
-              className="input"
-              value={cs.severity_description}
-              onChange={(e) => set((c) => { c.severity_description = e.target.value; })}
-              placeholder="Contoh: Penurunan Profitabilitas"
-            />
-          </Field>
-          <Field label="Rp" error={errFor(`${p}.rp_amount`)}>
-            <input
-              className="input"
-              type="number"
-              min="0"
-              value={cs.rp_amount}
-              onChange={(e) => set((c) => { c.rp_amount = e.target.value; })}
-              placeholder="50000000"
-            />
-          </Field>
-        </div>
-      </div>
-    );
-  }
-
-  if (sec === 'control') {
-    return (
-      <div className="mb-3 rounded border border-slate-200 bg-white p-3">
-        <p className="mb-2 text-xs font-bold text-slate-500">CAUSE: {cs.name || '(belum diisi)'}</p>
-        <div className="grid gap-3 md:grid-cols-3">
-          <Field label="Pengendalian yang Ada" required error={errFor(`${p}.control.present`)}>
-            <select className="input" value={cs.control.present} onChange={(e) => set((c) => { c.control.present = e.target.value; })}>
-              <option value="">— pilih —</option>
-              <option value="ADA">Ada</option>
-              <option value="TIDAK_ADA">Tidak Ada</option>
-            </select>
-          </Field>
-          <Field label="Memadai?" required error={errFor(`${p}.control.adequacy`)}>
-            <select className="input" value={cs.control.adequacy} onChange={(e) => set((c) => { c.control.adequacy = e.target.value; })}>
-              <option value="">— pilih —</option>
-              <option value="MEMADAI">Memadai</option>
-              <option value="BELUM_MEMADAI">Belum Memadai</option>
-            </select>
-          </Field>
-          <Field label="Dijalankan (%)" required error={errFor(`${p}.control.implementation`)} hint="0–100">
-            <input
-              className="input"
-              type="number"
-              min="0"
-              max="100"
-              value={cs.control.implementation}
-              onChange={(e) => set((c) => { c.control.implementation = e.target.value; })}
-              placeholder="80"
-            />
-          </Field>
-        </div>
-      </div>
-    );
-  }
-
-  if (sec === 'treatment') {
-    return (
-      <div className="mb-3 rounded border border-slate-200 bg-white p-3">
-        <p className="mb-2 text-xs font-bold text-slate-500">CAUSE: {cs.name || '(belum diisi)'}</p>
-        <div className="grid gap-3">
-          <div className="md:w-1/2">
-            <Field label="Opsi Perlakuan Risiko" required error={errFor(`${p}.treatment_id`)}>
-              <select className="input" value={cs.treatment_id} onChange={(e) => set((c) => { c.treatment_id = e.target.value; })}>
-                <option value="">— pilih —</option>
-                {treatments.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
-            </Field>
-          </div>
-          <Field label="Deskripsi Tindakan Mitigasi" required error={errFor(`${p}.mitigation_description`)}>
-            <textarea
-              className="input min-h-[110px]"
-              placeholder={'1. Melakukan analisis dan pemantauan biaya secara rutin.\n2. Mengidentifikasi risiko yang mengalami peningkatan biaya.\n3. Melakukan negosiasi dengan pemasok...'}
-              value={cs.mitigation_description}
-              onChange={(e) => set((c) => { c.mitigation_description = e.target.value; })}
-            />
-          </Field>
-        </div>
-      </div>
-    );
-  }
-
-  // assessment sections: inherent / residual / after
-  const groupMap = { inherent: 'inherent', residual: 'residual', after: 'after' };
-  const group = groupMap[sec];
-  const labelMap = {
-    inherent: 'Inherent Risk',
-    residual: 'Residual Risk',
-    after: 'Risk After Mitigation',
-  };
-
   return (
     <div className="mb-3 rounded border border-slate-200 bg-white p-3">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-bold text-slate-500">CAUSE: {cs.name || '(belum diisi)'}</p>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-500">{labelMap[group]}:</span>
-          {selScore(cs, group)}
-        </div>
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-xs font-bold text-slate-500">RISK CAUSE {si + 1}</p>
+        {showRemove && (
+          <button
+            type="button"
+            className="text-xs font-semibold text-jxb-red hover:underline"
+            onClick={() => mutate((f) => { const arr = f.categories[ci].events[ei].causes; arr.splice(si, 1); if (!arr.length) arr.push(blankCause()); })}
+          >
+            Hapus cause
+          </button>
+        )}
       </div>
-      <div className="grid gap-3 md:grid-cols-3">
-        <Field label="Likelihood (1-5)" required error={errFor(`${p}.${group}.likelihood`)}>
-          <select className="input" value={cs[group].likelihood} onChange={(e) => set((c) => { c[group].likelihood = e.target.value; })}>
-            <option value="">— pilih —</option>
-            {lOptions.map((o) => (
-              <option key={o.score} value={o.score}>{o.score} — {o.name}</option>
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field label="Risk Cause" required error={errFor(`${p}.name`)}>
+          <input
+            className="input"
+            placeholder="Penyebab risiko"
+            value={cs.name}
+            onChange={(e) => set((c) => { c.name = e.target.value; })}
+          />
+        </Field>
+        <Field label="Sumber Risiko">
+          <select
+            className="input"
+            value={cs.source_id}
+            onChange={(e) => set((c) => { c.source_id = e.target.value; })}
+          >
+            <option value="">- pilih -</option>
+            {sources.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
         </Field>
-        <Field label="Impact (1-5)" required error={errFor(`${p}.${group}.impact`)}>
-          <select className="input" value={cs[group].impact} onChange={(e) => set((c) => { c[group].impact = e.target.value; })}>
-            <option value="">— pilih —</option>
-            {iOptions.map((o) => (
-              <option key={o.score} value={o.score}>{o.score} — {o.name}</option>
-            ))}
-          </select>
+        <Field label="Severity — Deskripsi Akibat / Potensi Kerugian" required error={errFor(`${p}.severity_description`)}>
+          <input
+            className="input"
+            value={cs.severity_description}
+            onChange={(e) => set((c) => { c.severity_description = e.target.value; })}
+            placeholder="Contoh: Penurunan Profitabilitas"
+          />
         </Field>
-        <div>
-          <span className="label">Level of Risk (otomatis)</span>
-          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-            {(() => {
-              const s = score(cs[group].likelihood, cs[group].impact);
-              if (s === null) return <span className="text-sm text-slate-400">—</span>;
-              const lv = levelOf(s);
-              return (
-                <span className="flex items-center gap-2 text-sm">
-                  <LevelBadge level={lv?.level || '-'} score={s} />
-                  <span className="text-xs text-slate-400">{cs[group].likelihood} × {cs[group].impact}</span>
-                </span>
-              );
-            })()}
-          </div>
-          <p className="mt-1 text-[11px] text-slate-400">Score = Likelihood × Impact</p>
+        <Field label="Rp" error={errFor(`${p}.rp_amount`)}>
+          <input
+            className="input"
+            type="number"
+            min="0"
+            value={cs.rp_amount}
+            onChange={(e) => set((c) => { c.rp_amount = e.target.value; })}
+            placeholder="50000000"
+          />
+        </Field>
+        <div className="md:col-span-2">
+          <Field label="Unit Kerja / Unit Usaha" required error={errFor(`${p}.work_unit`)}>
+            <input
+              className="input"
+              value={cs.work_unit}
+              onChange={(e) => set((c) => { c.work_unit = e.target.value; })}
+              placeholder="Contoh: Front Office / Food & Beverage"
+            />
+          </Field>
         </div>
       </div>
     </div>
   );
 }
 
-function blankCauseLocal() {
-  return {
-    key: Math.random().toString(36).slice(2, 9),
-    name: '',
-    source_id: '',
-    severity_id: '',
-    severity_description: '',
-    rp_amount: '',
-    inherent: { likelihood: '', impact: '' },
-    control: { present: '', adequacy: '', implementation: '' },
-    residual: { likelihood: '', impact: '' },
-    treatment_id: '',
-    mitigation_description: '',
-    after: { likelihood: '', impact: '' },
+/* ---------------------------------------------------------------
+   Assessment per event (Inherent / Control / Residual / Treatment / After)
+--------------------------------------------------------------- */
+function EventAssessmentFields({ sec, ci, ei, ev, mutate, errFor, lOptions, iOptions, levelOf, registerId, toast }) {
+  const ep = `categories[${ci}].events[${ei}]`;
+  const set = (fn) => mutate((f) => fn(f.categories[ci].events[ei]));
+  const [uploadingItem, setUploadingItem] = useState(null);
+
+  const parseMits = (raw) => {
+    if (typeof raw === 'string') {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return [];
+      }
+    }
+    return Array.isArray(raw) ? raw : [];
   };
+
+  const syncDocuments = (res, mii) => {
+    const items = (res.data.data?.categories || [])
+      .flatMap((c) => c.events || [])
+      .flatMap((e) => parseMits(e.mitigation_items));
+    const mi = ev.mitigation_items[mii];
+    const fresh = items.find((x) => x.id === mi?.id);
+    mutate((f) => {
+      f.categories[ci].events[ei].mitigation_items[mii].documents = fresh?.documents || [];
+    });
+  };
+
+  const uploadDocument = async (mii, fileList) => {
+    if (!fileList || !fileList.length) return;
+    const mi = ev.mitigation_items[mii];
+    if (!registerId || !mi?.id) {
+      toast?.error('Simpan draft terlebih dahulu sebelum mengunggah bukti dokumen');
+      return;
+    }
+    const body = new FormData();
+    Array.from(fileList).forEach((f) => body.append('files', f));
+    setUploadingItem(mi.id);
+    try {
+      const res = await api.post(`/risk-registers/${registerId}/mitigation-items/${mi.id}/documents`, body);
+      syncDocuments(res, mii);
+      toast?.success('Bukti dokumen berhasil diunggah');
+    } catch (err) {
+      toast?.error(parseError(err).message);
+    } finally {
+      setUploadingItem(null);
+    }
+  };
+
+  const removeDocument = async (mii, docId) => {
+    const mi = ev.mitigation_items[mii];
+    if (!registerId || !mi?.id) return;
+    try {
+      const res = await api.delete(`/risk-registers/${registerId}/mitigation-items/${mi.id}/documents/${docId}`);
+      syncDocuments(res, mii);
+      toast?.success('Dokumen dihapus');
+    } catch (err) {
+      toast?.error(parseError(err).message);
+    }
+  };
+
+  if (sec === 'control') {
+    return (
+      <div className="grid gap-3 md:grid-cols-3">
+        <Field label="Pengendalian yang Ada" required error={errFor(`${ep}.control.present`)}>
+          <select className="input" value={ev.control.present} onChange={(e) => set((x) => { x.control.present = e.target.value; })}>
+            <option value="">- pilih -</option>
+            <option value="ADA">Ada</option>
+            <option value="TIDAK_ADA">Tidak Ada</option>
+          </select>
+        </Field>
+        <Field label="Memadai?" required error={errFor(`${ep}.control.adequacy`)}>
+          <select className="input" value={ev.control.adequacy} onChange={(e) => set((x) => { x.control.adequacy = e.target.value; })}>
+            <option value="">- pilih -</option>
+            <option value="MEMADAI">Memadai</option>
+            <option value="BELUM_MEMADAI">Belum Memadai</option>
+          </select>
+        </Field>
+        <Field label="Dijalankan (%)" required error={errFor(`${ep}.control.implementation`)} hint="0-100">
+          <input
+            className="input"
+            type="number"
+            min="0"
+            max="100"
+            value={ev.control.implementation}
+            onChange={(e) => set((x) => { x.control.implementation = e.target.value; })}
+            placeholder="80"
+          />
+        </Field>
+      </div>
+    );
+  }
+
+  if (sec === 'treatment') {
+    const itemsErr = errFor(`${ep}.mitigation_items`);
+    return (
+      <div className="space-y-2">
+        <p className="text-sm font-semibold text-slate-700">Daftar Tindakan Mitigasi</p>
+        {ev.mitigation_items.map((mi, mii) => (
+          <div key={mi.key} className="rounded border border-slate-200 bg-white p-2">
+            <div className="flex items-start gap-2">
+              <span className="mt-2 w-6 shrink-0 text-right text-xs font-semibold text-slate-500">{mii + 1}.</span>
+              <textarea
+                className="input min-h-[44px] flex-1"
+                placeholder={`Tindakan mitigasi ${mii + 1}`}
+                value={mi.description}
+                onChange={(e) => set((x) => { x.mitigation_items[mii].description = e.target.value; })}
+              />
+              <button
+                type="button"
+                className="btn-danger btn-sm mt-1"
+                disabled={ev.mitigation_items.length <= 1}
+                onClick={() => set((x) => { x.mitigation_items.splice(mii, 1); if (!x.mitigation_items.length) x.mitigation_items.push(blankMitigationItem()); })}
+              >
+                -
+              </button>
+            </div>
+            <div className="mt-2 pl-8">
+              <label className="label">Tindak Lanjut</label>
+              <textarea
+                className="input min-h-[40px]"
+                placeholder={`Tindak lanjut mitigasi ${mii + 1}`}
+                value={mi.follow_up}
+                onChange={(e) => set((x) => { x.mitigation_items[mii].follow_up = e.target.value; })}
+              />
+              {errFor(`${ep}.mitigation_items[${mii}].description`) && (
+                <p className="mt-1 text-xs font-semibold text-jxb-red">{errFor(`${ep}.mitigation_items[${mii}].description`)}</p>
+              )}
+              {errFor(`${ep}.mitigation_items[${mii}].follow_up`) && (
+                <p className="mt-1 text-xs font-semibold text-jxb-red">{errFor(`${ep}.mitigation_items[${mii}].follow_up`)}</p>
+              )}
+              <label className="label mt-2">Bukti Dokumen (opsional)</label>
+              <input
+                type="file"
+                multiple
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.webp,.bmp"
+                className="input"
+                disabled={!registerId || uploadingItem === mi.id}
+                onChange={(e) => {
+                  uploadDocument(mii, e.target.files);
+                  e.target.value = '';
+                }}
+              />
+              {!registerId && (
+                <p className="mt-1 text-xs text-slate-400">Simpan draft terlebih dahulu untuk mengunggah bukti.</p>
+              )}
+              {(mi.documents || []).map((d) => (
+                <div key={d.id} className="mt-1 flex items-center justify-between gap-2 text-xs">
+                  <button
+                    type="button"
+                    className="truncate text-primary-700 hover:underline"
+                    onClick={() => downloadDocument(registerId, d.id, d.original_name)}
+                  >
+                    {d.original_name}
+                  </button>
+                  <button
+                    type="button"
+                    className="shrink-0 font-semibold text-jxb-red hover:underline"
+                    onClick={() => removeDocument(mii, d.id)}
+                  >
+                    Hapus
+                  </button>
+                </div>
+              ))}
+              {uploadingItem === mi.id && <p className="mt-1 text-xs text-slate-500">Mengunggah...</p>}
+            </div>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="btn-secondary btn-sm"
+          onClick={() => set((x) => { x.mitigation_items.push(blankMitigationItem()); })}
+        >
+          + Tambah Item Mitigasi
+        </button>
+        {itemsErr && <p className="text-xs text-jxb-red">{itemsErr}</p>}
+      </div>
+    );
+  }
+
+  const group = sec;
+  const s = score(ev[group].likelihood, ev[group].impact);
+  const lv = s === null ? null : levelOf(s);
+
+  return (
+    <div className="grid gap-3 md:grid-cols-3">
+      <Field label="Likelihood (1-5)" required error={errFor(`${ep}.${group}.likelihood`)}>
+        <select className="input" value={ev[group].likelihood} onChange={(e) => set((x) => { x[group].likelihood = e.target.value; })}>
+          <option value="">- pilih -</option>
+          {lOptions.map((o) => (
+            <option key={o.score} value={o.score}>{o.score} - {o.name}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Impact (1-5)" required error={errFor(`${ep}.${group}.impact`)}>
+        <select className="input" value={ev[group].impact} onChange={(e) => set((x) => { x[group].impact = e.target.value; })}>
+          <option value="">- pilih -</option>
+          {iOptions.map((o) => (
+            <option key={o.score} value={o.score}>{o.score} - {o.name}</option>
+          ))}
+        </select>
+      </Field>
+      <div>
+        <span className="label">Level of Risk (otomatis)</span>
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+          {s === null ? (
+            <span className="text-sm text-slate-400">-</span>
+          ) : (
+            <span className="flex items-center gap-2 text-sm">
+              <LevelBadge level={lv?.level || '-'} score={s} />
+              <span className="text-xs text-slate-400">{ev[group].likelihood} x {ev[group].impact}</span>
+            </span>
+          )}
+        </div>
+        <p className="mt-1 text-[11px] text-slate-400">Score = Likelihood x Impact</p>
+      </div>
+    </div>
+  );
 }
