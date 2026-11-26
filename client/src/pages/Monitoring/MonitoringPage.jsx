@@ -1,35 +1,77 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from 'recharts';
-import api, { parseError } from '../../api/client';
-import { Card, PageHeader, Spinner, EmptyState, Field, Pagination } from '../../components/ui/Common';
-import { StatusBadge, LevelBadge } from '../../components/ui/Badges';
+import api, { parseError, downloadDocument } from '../../api/client';
+import { Card, PageHeader, Spinner, EmptyState, Field } from '../../components/ui/Common';
 import { useToast } from '../../contexts/ToastContext';
-import { RISK_LEVEL_COLORS, STATUS, STATUS_LABEL } from '../../constants';
+import { STATUS, STATUS_LABEL, FOLLOW_UP_STATUS_LABEL } from '../../constants';
 
 const YEARS = Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i);
 const LEVELS = ['Rendah', 'Moderat', 'Tinggi', 'Ekstrem'];
+
+const STATUS_CARDS = [
+  {
+    key: STATUS.WAITING_OWNER_APPROVAL,
+    countKey: 'waiting_owner',
+    tone: 'bg-amber-500',
+    description: 'Menunggu approval Risk Owner.',
+  },
+  {
+    key: STATUS.WAITING_MR_INSTRUCTION,
+    countKey: 'waiting_mr_instruction',
+    tone: 'bg-blue-500',
+    description: 'Owner approved, MR belum memberi instruksi.',
+  },
+  {
+    key: STATUS.WAITING_OFFICER_FOLLOWUP,
+    countKey: 'waiting_officer_followup',
+    tone: 'bg-cyan-500',
+    description: 'Officer mengisi realisasi dan bukti.',
+  },
+  {
+    key: STATUS.WAITING_MR_APPROVAL,
+    countKey: 'waiting_mr',
+    tone: 'bg-violet-500',
+    description: 'MR menilai hasil tindak lanjut.',
+  },
+  {
+    key: STATUS.APPROVED,
+    countKey: 'approved',
+    tone: 'bg-emerald-500',
+    description: 'Semua tindak lanjut sesuai.',
+  },
+  {
+    key: STATUS.REJECTED_BY_OWNER,
+    countKey: 'rejected_owner',
+    tone: 'bg-orange-500',
+    description: 'Dikembalikan oleh Risk Owner.',
+  },
+  {
+    key: STATUS.REJECTED_BY_MR,
+    countKey: 'rejected_mr',
+    tone: 'bg-red-500',
+    description: 'Dikembalikan oleh MR.',
+  },
+];
+
+const FOLLOW_UP_CLASS = {
+  SELESAI: 'bg-green-50 text-green-700 border-green-300',
+  BELUM_MEMADAI: 'bg-amber-50 text-amber-700 border-amber-300',
+  TIDAK_DAPAT_DITINDAKLANJUTI: 'bg-slate-100 text-slate-600 border-slate-300',
+};
 
 export default function MonitoringPage() {
   const toast = useToast();
   const navigate = useNavigate();
 
-  const [filters, setFilters] = useState({ year: '', branch: '', category: '', status: '', level: '', owner: '' });
+  const [filters, setFilters] = useState({ year: '', branch: '', category: '', level: '', owner: '' });
   const [summary, setSummary] = useState([]);
-  const [list, setList] = useState({ items: [], total: 0, page: 1, limit: 20 });
   const [branches, setBranches] = useState([]);
   const [categories, setCategories] = useState([]);
   const [users, setUsers] = useState([]);
+  const [activeStatus, setActiveStatus] = useState('');
+  const [followUps, setFollowUps] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(1);
+  const [followUpsLoading, setFollowUpsLoading] = useState(false);
 
   useEffect(() => {
     api.get('/branches').then((r) => setBranches(r.data.data || [])).catch(() => {});
@@ -42,50 +84,63 @@ export default function MonitoringPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = clean(filters);
-      const [s, l] = await Promise.all([
-        api.get('/monitoring/summary', { params }),
-        api.get('/monitoring', { params: { ...params, page, limit: 20 } }),
-      ]);
-      setSummary(s.data.data || []);
-      setList(l.data);
+      const res = await api.get('/monitoring/summary', { params: clean(filters) });
+      setSummary(res.data.data || []);
     } catch (err) {
       toast.error(parseError(err).message);
     } finally {
       setLoading(false);
     }
-  }, [filters, page, toast]);
+  }, [filters, toast]);
 
   useEffect(() => {
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (!activeStatus) {
+      setFollowUps([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setFollowUpsLoading(true);
+    api
+      .get('/monitoring/follow-ups', { params: { ...clean(filters), status: activeStatus } })
+      .then((r) => {
+        if (!cancelled) setFollowUps(r.data.items || []);
+      })
+      .catch((err) => {
+        if (!cancelled) toast.error(parseError(err).message);
+      })
+      .finally(() => {
+        if (!cancelled) setFollowUpsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStatus, filters, toast]);
+
   const setF = (k, v) => {
     setFilters((f) => ({ ...f, [k]: v }));
-    setPage(1);
   };
 
-  const totals = summary.reduce(
-    (acc, s) => ({
-      risk: acc.risk + Number(s.total_risk || 0),
-      active: acc.active + Number(s.active_risk || 0),
-      pending:
-        acc.pending +
-        Number(s.waiting_mr_instruction || 0) +
-        Number(s.waiting_officer_followup || 0) +
-        Number(s.waiting_owner || 0) +
-        Number(s.waiting_mr || 0),
-      rejected: acc.rejected + Number(s.rejected_risk || 0),
-    }),
-    { risk: 0, active: 0, pending: 0, rejected: 0 }
-  );
+  const sum = (key) => summary.reduce((total, row) => total + Number(row[key] || 0), 0);
+  const counts = {
+    [STATUS.WAITING_OWNER_APPROVAL]: sum('waiting_owner'),
+    [STATUS.WAITING_MR_INSTRUCTION]: sum('waiting_mr_instruction'),
+    [STATUS.WAITING_OFFICER_FOLLOWUP]: sum('waiting_officer_followup'),
+    [STATUS.WAITING_MR_APPROVAL]: sum('waiting_mr'),
+    [STATUS.APPROVED]: sum('active_risk'),
+    [STATUS.REJECTED_BY_OWNER]: sum('rejected_owner'),
+    [STATUS.REJECTED_BY_MR]: sum('rejected_mr'),
+  };
 
   return (
-    <div>
-      <PageHeader title="Monitoring" subtitle="Pantau risiko per branch, level, status, dan tren mitigasi" />
+    <div className="pb-10">
+      <PageHeader title="Dashboard Monitoring" subtitle="Pantau status tindak lanjut dan detail item mitigasi per status" />
 
       <Card className="mb-4 p-4">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <Field label="Branch">
             <select className="input" value={filters.branch} onChange={(e) => setF('branch', e.target.value)}>
               <option value="">Semua</option>
@@ -120,180 +175,110 @@ export default function MonitoringPage() {
               {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
             </select>
           </Field>
-          <Field label="Status">
-            <select className="input" value={filters.status} onChange={(e) => setF('status', e.target.value)}>
-              <option value="">Semua</option>
-              {Object.values(STATUS).map((s) => (
-                <option key={s} value={s}>{STATUS_LABEL[s]}</option>
-              ))}
-            </select>
-          </Field>
         </div>
       </Card>
 
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {[
-          { label: 'Total Risk', value: totals.risk, color: 'bg-primary-700' },
-          { label: 'Active Risk', value: totals.active, color: 'bg-jxb-green' },
-          { label: 'Menunggu Approval', value: totals.pending, color: 'bg-amber-500' },
-          { label: 'Rejected', value: totals.rejected, color: 'bg-jxb-red' },
-        ].map((c) => (
-          <div key={c.label} className="card overflow-hidden">
-            <div className={`h-1.5 ${c.color}`} />
+        {STATUS_CARDS.map((card) => (
+          <button
+            key={card.key}
+            type="button"
+            onClick={() => setActiveStatus((prev) => (prev === card.key ? '' : card.key))}
+            className={`card overflow-hidden text-left transition hover:shadow-md ${activeStatus === card.key ? 'ring-2 ring-primary-500' : ''}`}
+          >
+            <div className={`h-1.5 ${card.tone}`} />
             <div className="px-4 py-3">
-              <p className="text-2xl font-bold text-slate-800">{c.value}</p>
-              <p className="text-xs font-medium text-slate-500">{c.label}</p>
+              <p className="text-2xl font-bold text-slate-800">{loading ? '-' : counts[card.key] || 0}</p>
+              <p className="text-xs font-semibold text-slate-700">{STATUS_LABEL[card.key]}</p>
+              <p className="mt-1 text-[11px] leading-tight text-slate-400">{card.description}</p>
             </div>
-          </div>
+          </button>
         ))}
       </div>
 
-      <div className="mb-4 grid gap-4 lg:grid-cols-2">
-        <Card className="p-4">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700">Total Risk per Branch</h3>
-          {loading ? (
-            <Spinner />
-          ) : !summary.length ? (
-            <EmptyState title="Belum ada data" />
-          ) : (
-            <div className="h-72">
-              <ResponsiveContainer>
-                <BarChart data={summary.map((s) => ({ label: s.branch_name, value: Number(s.total_risk) }))} layout="vertical" margin={{ left: 20, right: 16 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis type="number" allowDecimals={false} />
-                  <YAxis type="category" dataKey="label" width={150} tick={{ fontSize: 10 }} />
-                  <Tooltip />
-                  <Bar dataKey="value" fill="#1d4ed8" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+      {activeStatus && (
+        <Card className="mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-700">{STATUS_LABEL[activeStatus]}</h3>
+              <p className="text-xs text-slate-400">{followUps.length} item mitigasi</p>
             </div>
-          )}
-        </Card>
-
-        <Card className="p-4">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700">Risiko Tertinggi per Branch (After Mitigation)</h3>
-          {loading ? (
-            <Spinner />
-          ) : !summary.length ? (
-            <EmptyState title="Belum ada data" />
-          ) : (
-            <div className="h-72">
-              <ResponsiveContainer>
-                <BarChart data={summary.map((s) => ({ label: s.branch_name, value: Number(s.avg_after || 0) }))} layout="vertical" margin={{ left: 20, right: 16 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis type="number" allowDecimals={false} />
-                  <YAxis type="category" dataKey="label" width={150} tick={{ fontSize: 10 }} />
-                  <Tooltip />
-                  <Bar dataKey="value" fill="#dc2626" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </Card>
-      </div>
-
-      <Card className="mb-4">
-        <div className="border-b border-slate-200 px-4 py-3">
-          <h3 className="text-sm font-semibold text-slate-700">Ringkasan per Branch</h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="table-base min-w-[850px]">
-            <thead>
-              <tr>
-                <th>Branch</th>
-                <th>Total</th>
-                <th>Active</th>
-                <th>Waiting Owner</th>
-                <th>Waiting MR</th>
-                <th>Rejected</th>
-                <th>Inherent (max)</th>
-                <th>Residual (max)</th>
-                <th>After (max)</th>
-                <th>Rata-rata After</th>
-              </tr>
-            </thead>
-            <tbody>
-              {!summary.length && (
-                <tr><td colSpan="10" className="py-6 text-center text-slate-400">Tidak ada data</td></tr>
-              )}
-              {summary.map((s) => (
-                <tr key={s.branch_id}>
-                  <td className="font-semibold">{s.branch_name}</td>
-                  <td>{s.total_risk}</td>
-                  <td className="text-green-700">{s.active_risk}</td>
-                  <td className="text-amber-600">{s.waiting_owner}</td>
-                  <td className="text-primary-700">{s.waiting_mr}</td>
-                  <td className="text-jxb-red">{s.rejected_risk}</td>
-                  <td>{s.inherent ? <LevelBadge level={s.inherent.level} score={s.inherent.score} /> : '-'}</td>
-                  <td>{s.residual ? <LevelBadge level={s.residual.level} score={s.residual.score} /> : '-'}</td>
-                  <td>{s.after ? <LevelBadge level={s.after.level} score={s.after.score} /> : '-'}</td>
-                  <td>
-                    <span
-                      className="rounded px-2 py-0.5 text-xs font-bold text-white"
-                      style={{ backgroundColor: RISK_LEVEL_COLORS[s.after?.level] || '#94a3b8' }}
-                    >
-                      {s.avg_after}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      <Card>
-        <div className="border-b border-slate-200 px-4 py-3">
-          <h3 className="text-sm font-semibold text-slate-700">Detail Risk Register ({list.total})</h3>
-        </div>
-        {loading ? (
-          <Spinner />
-        ) : !list.items.length ? (
-          <EmptyState title="Tidak ada Risk Register" />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="table-base min-w-[1000px]">
-              <thead>
-                <tr>
-                  <th>Risk Code</th>
-                  <th>Objective</th>
-                  <th>Branch</th>
-                  <th>Owner</th>
-                  <th>Inherent</th>
-                  <th>Residual</th>
-                  <th>After</th>
-                  <th>Mitigation Status</th>
-                  <th>Approval Status</th>
-                  <th className="text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {list.items.map((r) => (
-                  <tr key={r.id}>
-                    <td className="font-semibold text-primary-700">{r.risk_code}</td>
-                    <td className="max-w-[220px] text-slate-600">{r.objective}</td>
-                    <td className="text-xs">{r.branch_name}</td>
-                    <td className="text-xs">{r.owner_name}</td>
-                    <td><LevelBadge {...(r.inherent || {})} /></td>
-                    <td><LevelBadge {...(r.residual || {})} /></td>
-                    <td><LevelBadge {...(r.after || {})} /></td>
-                    <td className="text-xs">
-                      {r.status === 'APPROVED' ? 'Selesai' : r.status.includes('REJECTED') ? 'Perlu perbaikan' : 'Berjalan'}
-                    </td>
-                    <td><StatusBadge status={r.status} /></td>
-                    <td>
-                      <button className="btn-secondary btn-sm ml-auto" onClick={() => navigate(`/risk-registers/${r.id}`)}>
-                        Detail
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <Pagination page={list.page} limit={list.limit} total={list.total} onPage={setPage} />
+            <button className="btn-secondary btn-sm" onClick={() => setActiveStatus('')}>Tutup</button>
           </div>
-        )}
-      </Card>
+          {followUpsLoading ? (
+            <Spinner />
+          ) : !followUps.length ? (
+            <EmptyState title="Tidak ada item mitigasi" description="Tidak ada item pada status ini." />
+          ) : (
+            <div className="overflow-hidden">
+              <table className="table-base table-fixed w-full">
+                <colgroup>
+                  <col className="w-[18%]" />
+                  <col className="w-[13%]" />
+                  <col className="w-[24%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[17%]" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Event</th>
+                    <th>Risk</th>
+                    <th>Mitigasi</th>
+                    <th>Bukti</th>
+                    <th>Status</th>
+                    <th>Keterangan MR Terakhir</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {followUps.map((row) => (
+                    <tr key={row.id}>
+                      <td className="break-words">
+                        <p className="font-semibold leading-snug text-slate-700">{row.event_name}</p>
+                        <p className="mt-0.5 break-words text-xs text-slate-400">{row.category_name}</p>
+                      </td>
+                      <td className="break-words">
+                        <button
+                          className="break-words text-left font-semibold text-primary-700 hover:underline"
+                          onClick={() => navigate(`/risk-registers/${row.register_id}`)}
+                        >
+                          {row.risk_code}
+                        </button>
+                        <p className="mt-0.5 break-words text-xs text-slate-400">{row.branch_name}</p>
+                      </td>
+                      <td className="break-words leading-relaxed text-slate-600">{row.description}</td>
+                      <td>
+                        <div className="flex flex-wrap gap-1">
+                          {row.documents.length ? (
+                            row.documents.map((doc) => (
+                              <button
+                                key={`${row.id}:${doc.id}`}
+                                className="inline-flex max-w-full items-center rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-primary-700 hover:bg-slate-100"
+                                title={doc.original_name}
+                                onClick={() => downloadDocument(row.register_id, doc.id, doc.original_name)}
+                              >
+                                <span className="truncate">{doc.original_name}</span>
+                              </button>
+                            ))
+                          ) : (
+                            <span className="text-xs text-slate-400">-</span>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold ${FOLLOW_UP_CLASS[row.follow_up_status] || FOLLOW_UP_CLASS.TIDAK_DAPAT_DITINDAKLANJUTI}`}>
+                          {FOLLOW_UP_STATUS_LABEL[row.follow_up_status] || '-'}
+                        </span>
+                      </td>
+                      <td className="whitespace-pre-wrap break-words leading-relaxed text-slate-600">{row.mr_note || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
     </div>
   );
 }

@@ -42,6 +42,9 @@ router.get(
               SUM(rr.status = '${STATUS.WAITING_MR_INSTRUCTION}') AS waiting_mr_instruction,
               SUM(rr.status = '${STATUS.WAITING_OFFICER_FOLLOWUP}') AS waiting_officer_followup,
               SUM(rr.status = '${STATUS.WAITING_MR_APPROVAL}') AS waiting_mr,
+              SUM(rr.status = '${STATUS.DRAFT}') AS draft_risk,
+              SUM(rr.status = '${STATUS.REJECTED_BY_OWNER}') AS rejected_owner,
+              SUM(rr.status = '${STATUS.REJECTED_BY_MR}') AS rejected_mr,
               SUM(rr.status IN ('${STATUS.REJECTED_BY_OWNER}','${STATUS.REJECTED_BY_MR}')) AS rejected_risk,
               MAX(${SCORE_SUB.inherent}) AS max_inherent,
               MAX(${SCORE_SUB.residual}) AS max_residual,
@@ -70,6 +73,9 @@ router.get(
       waiting_mr_instruction: Number(r.waiting_mr_instruction || 0),
       waiting_officer_followup: Number(r.waiting_officer_followup || 0),
       waiting_mr: Number(r.waiting_mr || 0),
+      draft_risk: Number(r.draft_risk || 0),
+      rejected_owner: Number(r.rejected_owner || 0),
+      rejected_mr: Number(r.rejected_mr || 0),
       rejected_risk: Number(r.rejected_risk || 0),
       inherent: levelOf(r.max_inherent),
       residual: levelOf(r.max_residual),
@@ -87,6 +93,16 @@ router.get(
     };
 
     res.json({ success: true, status_labels: STATUS_LABEL, workflow, data });
+  })
+);
+
+/** Item mitigasi terdatar untuk dashboard monitoring */
+router.get(
+  '/follow-ups',
+  asyncHandler(async (req, res) => {
+    const scope = req.user.role === ROLES.MR ? { role: 'MR', userId: req.user.id } : { role: req.user.role, userId: req.user.id };
+    const result = await rrService.getMonitoringFollowUps(req.query, scope);
+    res.json({ success: true, ...result });
   })
 );
 

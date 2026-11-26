@@ -462,6 +462,41 @@ const getHistory = async (id) => {
   return { approvals, mitigations, audit: auditLogs };
 };
 
+const getMonitoringFollowUps = async (filters, scope) => {
+  const list = await getList(filters, scope, { page: 1, limit: 500 });
+  const items = [];
+
+  for (const reg of list.items) {
+    const detail = await getDetail(reg.id);
+    (detail.categories || []).forEach((cat) => {
+      (cat.events || []).forEach((ev) => {
+        parseMitigationItems(ev.mitigation_items).forEach((it, index) => {
+          items.push({
+            id: `${reg.id}:${ev.id}:${it.id || index}`,
+            register_id: reg.id,
+            risk_code: reg.risk_code,
+            branch_name: reg.branch_name,
+            register_status: reg.status,
+            category_name: cat.category_name,
+            event_id: ev.id,
+            event_name: ev.name,
+            item_id: it.id || null,
+            description: it.description || '-',
+            instruction: it.instruction || null,
+            realization: it.realization || null,
+            documents: Array.isArray(it.documents) ? it.documents : [],
+            follow_up_status: it.follow_up_status || null,
+            mr_note: it.mr_note || '',
+            updated_at: reg.updated_at,
+          });
+        });
+      });
+    });
+  }
+
+  return { items, total: items.length };
+};
+
 const deleteRegister = async (id, req) => {
   const user = req.user;
   const header = await repo.findHeader(id);
@@ -931,6 +966,7 @@ module.exports = {
   getList,
   getDetail,
   getHistory,
+  getMonitoringFollowUps,
   deleteRegister,
   uploadDocuments,
   removeDocument,

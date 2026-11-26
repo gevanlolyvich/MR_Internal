@@ -67,11 +67,13 @@ export default function RiskRegisterDetailPage() {
   const navigate = useNavigate();
   const { user, can } = useAuth();
   const toast = useToast();
+  const noticeStorageKey = `follow-up-notice:${id}`;
 
   const [data, setData] = useState(null);
   const [history, setHistory] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('treatment');
+  const [showFollowUpNotice, setShowFollowUpNotice] = useState(() => sessionStorage.getItem(noticeStorageKey) === '1');
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [approveOpen, setApproveOpen] = useState(false);
@@ -127,6 +129,13 @@ export default function RiskRegisterDetailPage() {
   }, [load]);
 
   useEffect(() => {
+    if (data && data.status !== STATUS.WAITING_MR_INSTRUCTION) {
+      setShowFollowUpNotice(false);
+      sessionStorage.removeItem(noticeStorageKey);
+    }
+  }, [data, noticeStorageKey]);
+
+  useEffect(() => {
     api.get('/masters/levels').then((r) => setLevels(r.data.data || [])).catch(() => {});
   }, []);
 
@@ -145,10 +154,11 @@ export default function RiskRegisterDetailPage() {
   const canSetFollowUpStatus = false;
   const canApproveOwner = isOwner && data.status === 'WAITING_OWNER_APPROVAL' && data.risk_owner_id === user.id;
   const canApproveMR = false;
-  const canRejectInstruction = false;
-  const approvable = canApproveOwner;
+  const isMrInstructionPending = isMR && data.status === 'WAITING_MR_INSTRUCTION';
+  const canRejectInstruction = isMrInstructionPending;
+  const approvable = canApproveOwner || (canRejectInstruction && !showFollowUpNotice);
   const followUpAction =
-    (isMR && ['WAITING_MR_INSTRUCTION', 'WAITING_MR_APPROVAL'].includes(data.status)) ||
+    (isMR && data.status === 'WAITING_MR_APPROVAL') ||
     (isOfficer && data.status === 'WAITING_OFFICER_FOLLOWUP' && data.risk_officer_id === user?.id);
   const canEditBtn =
     can('risk-register:edit') &&
@@ -183,11 +193,11 @@ export default function RiskRegisterDetailPage() {
   const stepByStatus = {
     DRAFT: 0,
     WAITING_OWNER_APPROVAL: 1,
-    REJECTED_BY_OWNER: 1,
+    REJECTED_BY_OWNER: 0,
     WAITING_MR_INSTRUCTION: 2,
     WAITING_OFFICER_FOLLOWUP: 3,
     WAITING_MR_APPROVAL: 4,
-    REJECTED_BY_MR: 4,
+    REJECTED_BY_MR: 0,
     APPROVED: 4,
     ARCHIVED: 4,
   };
@@ -347,6 +357,18 @@ export default function RiskRegisterDetailPage() {
             {followUpAction && (
               <Link to={`/follow-ups/${id}`} className="btn-primary">Buka Tindak Lanjut</Link>
             )}
+            {isMrInstructionPending && !showFollowUpNotice && (
+              <button
+                className="btn-primary"
+                onClick={() => {
+                  setShowFollowUpNotice(true);
+                  sessionStorage.setItem(noticeStorageKey, '1');
+                  setTab('treatment');
+                }}
+              >
+                Buka Tindak Lanjut
+              </button>
+            )}
             {canEditBtn && (
               <Link to={`/risk-registers/${id}/edit`} className="btn-secondary">Edit</Link>
             )}
@@ -358,7 +380,7 @@ export default function RiskRegisterDetailPage() {
                   title={mrNeedsStatus ? 'Lengkapi status & keterangan MR terlebih dahulu' : undefined}
                   onClick={() => setRejectOpen(true)}
                 >
-                  Kembalikan ke Officer
+                  {canRejectInstruction ? 'Reject Risk Register' : 'Kembalikan ke Officer'}
                 </button>
                 {(canApproveOwner || canApproveMR) && (
                   <button
@@ -491,18 +513,20 @@ export default function RiskRegisterDetailPage() {
             <div className="space-y-4">
               {!data.categories?.length && <EmptyState title="Belum ada data" />}
 
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="font-semibold text-slate-700">Tindak lanjut dikelola di menu khusus</p>
-                    <p className="mt-1">
-                      Tab ini hanya menampilkan catatan. Instruksi MR, realisasi & bukti Officer, serta penilaian MR
-                      dilakukan di menu <b>Tindak Lanjut</b>. Riwayat pengembalian tetap tampil di bawah.
-                    </p>
+              {isMrInstructionPending && showFollowUpNotice && (
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="font-semibold text-slate-700">Tindak lanjut dikelola di menu khusus</p>
+                      <p className="mt-1">
+                        Tab ini hanya menampilkan catatan. Instruksi MR, realisasi & bukti Officer, serta penilaian MR
+                        dilakukan di menu <b>Tindak Lanjut</b>. Riwayat pengembalian tetap tampil di bawah.
+                      </p>
+                    </div>
+                    <Link to={`/follow-ups/${id}`} className="btn-secondary btn-sm">Buka Tindak Lanjut</Link>
                   </div>
-                  <Link to={`/follow-ups/${id}`} className="btn-secondary btn-sm">Buka Tindak Lanjut</Link>
                 </div>
-              </div>
+              )}
 
               {(data.categories || []).map((cat) =>
                 (cat.events || []).map((ev) => (
@@ -815,7 +839,7 @@ export default function RiskRegisterDetailPage() {
       <Modal
         open={rejectOpen}
         onClose={() => setRejectOpen(false)}
-        title="Kembalikan ke Officer"
+        title={canRejectInstruction ? 'Kembalikan Instruksi ke Officer' : 'Kembalikan ke Officer'}
         footer={
           <>
             <button className="btn-secondary" onClick={() => setRejectOpen(false)} disabled={busy}>Batal</button>
@@ -828,13 +852,19 @@ export default function RiskRegisterDetailPage() {
         <Field label="Alasan Pengembalian" required>
           <textarea
             className="input min-h-[110px]"
-            placeholder="Contoh: Bukti realisasi belum menjelaskan hasil tindak lanjut."
+            placeholder={
+              canRejectInstruction
+                ? 'Contoh: Dokumen pendukung belum lengkap, mohon perbaiki risk treatment.'
+                : 'Contoh: Bukti realisasi belum menjelaskan hasil tindak lanjut.'
+            }
             value={rejectReason}
             onChange={(e) => setRejectReason(e.target.value)}
           />
         </Field>
         <p className="mt-2 text-xs text-slate-400">
-          Risk Register akan dikembalikan ke Risk Officer untuk diperbaiki pada tahap terkait.
+          {canRejectInstruction
+            ? 'Risk Register akan dikembalikan ke Risk Officer untuk memperbaiki risk treatment sebelum instruksi MR diberikan.'
+            : 'Risk Register akan dikembalikan ke Risk Officer untuk diperbaiki pada tahap terkait.'}
         </p>
       </Modal>
     </div>
