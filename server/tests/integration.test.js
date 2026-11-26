@@ -559,7 +559,7 @@ describe('6. Rejection & mitigation history', () => {
 
     const item = await firstItem();
     expect(item.follow_up_status).toBe('BELUM_MEMADAI');
-    expect(item.realization?.note || null).toBeNull();
+    expect(item.realization?.note).toBe('Realisasi telah dilaksanakan.');
     expect(item.documents || []).toHaveLength(0);
     const archived = (item.follow_up_history || []).find((h) => h.action === 'MR_FINAL_RETURN');
     expect(archived).toBeTruthy();
@@ -858,6 +858,11 @@ describe('11. Riwayat penilaian MR memakai status terakhir', () => {
     await api().post(`/api/risk-registers/${id}/submit`).set(auth(tokens.officer));
     await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.owner));
     await completeInstruction(id);
+    await api()
+      .post(`/api/risk-registers/${id}/mitigation-items/${itemId}/documents`)
+      .set(auth(tokens.officer))
+      .field('note', 'Realisasi telah dilaksanakan.')
+      .attach('files', Buffer.from('%PDF-1.4 bukti riwayat'), 'bukti-riwayat.pdf');
     await completeRealization(id, [itemId]);
   });
 
@@ -873,7 +878,10 @@ describe('11. Riwayat penilaian MR memakai status terakhir', () => {
       .set(auth(tokens.mr))
       .send({ assessments: [{ itemId, status: 'TIDAK_DAPAT_DITINDAKLANJUTI', note: 'Penilaian pertama' }] });
     expect(first.status).toBe(200);
-    expect((await storedItem()).follow_up_status).toBe('TIDAK_DAPAT_DITINDAKLANJUTI');
+    const returned = await storedItem();
+    expect(returned.follow_up_status).toBe('TIDAK_DAPAT_DITINDAKLANJUTI');
+    expect(returned.realization?.note).toBe('Realisasi telah dilaksanakan.');
+    expect(returned.documents || []).toHaveLength(1);
 
     await completeRealization(id, [itemId]);
     const second = await api()

@@ -28,6 +28,62 @@ const ACTION_LABEL = {
   REJECT_MR: 'Dikembalikan MR',
 };
 
+const ACTOR_LABEL = {
+  MR: 'MR',
+  RISK_OFFICER: 'Risk Officer',
+  RISK_OWNER: 'Risk Owner',
+};
+
+const NOTE_LABEL = {
+  MR_INSTRUCTION: 'Catatan MR',
+  OFFICER_REALIZATION: 'Catatan Officer',
+  MR_FINAL: 'Tanggapan MR',
+  MR_FINAL_RETURN: 'Tanggapan MR',
+};
+
+const TIMELINE_STYLE = {
+  MR_INSTRUCTION: {
+    icon: 'M12 5v14M5 12h14',
+    iconWrap: 'bg-blue-50 text-blue-600 ring-1 ring-blue-100',
+    border: 'border-l-blue-400',
+  },
+  OFFICER_REALIZATION: {
+    icon: 'M12 16V4m0 0L8 8m4-4 4 4M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3',
+    iconWrap: 'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-100',
+    border: 'border-l-cyan-400',
+  },
+  MR_FINAL: {
+    icon: 'M5 13l4 4L19 7',
+    iconWrap: 'bg-emerald-50 text-emerald-600 ring-1 ring-emerald-100',
+    border: 'border-l-emerald-400',
+  },
+  MR_FINAL_RETURN: {
+    icon: 'M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-2',
+    iconWrap: 'bg-amber-50 text-amber-600 ring-1 ring-amber-100',
+    border: 'border-l-amber-400',
+  },
+};
+
+const TIMELINE_FALLBACK = {
+  icon: 'M12 8h.01M12 12h.01M12 16h.01',
+  iconWrap: 'bg-slate-50 text-slate-500 ring-1 ring-slate-200',
+  border: 'border-l-slate-300',
+};
+
+const STATUS_PILL = {
+  SELESAI: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
+  BELUM_MEMADAI: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
+  TIDAK_DAPAT_DITINDAKLANJUTI: 'bg-rose-50 text-rose-700 ring-1 ring-rose-200',
+};
+
+const formatTimelineDate = (value) => {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(date.getDate())}-${pad(date.getMonth() + 1)}-${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
 const STEP_BY_STATUS = {
   DRAFT: 0,
   WAITING_OWNER_APPROVAL: 1,
@@ -54,6 +110,16 @@ const STAGE_INFO = {
   WAITING_MR_APPROVAL: {
     title: 'Nilai bukti dan catatan',
     desc: 'Berikan status dan tanggapan per item. Item yang belum sesuai akan dikembalikan ke Officer.',
+    actor: 'MR',
+  },
+  APPROVED: {
+    title: 'Selesai',
+    desc: 'Semua tindak lanjut telah dinilai dan disetujui MR.',
+    actor: 'MR',
+  },
+  ARCHIVED: {
+    title: 'Diarsipkan',
+    desc: 'Risk Register dan tindak lanjutnya telah diarsipkan.',
     actor: 'MR',
   },
 };
@@ -302,6 +368,7 @@ export default function FollowUpDetailPage() {
 
   const stage = STAGE_INFO[data.status];
   const currentStep = STEP_BY_STATUS[data.status] ?? 0;
+  const actorLabel = data.status === STATUS.APPROVED ? 'Disetujui oleh' : data.status === STATUS.ARCHIVED ? 'Diarsipkan oleh' : 'Diisi oleh';
 
   return (
     <div className="pb-10">
@@ -321,14 +388,18 @@ export default function FollowUpDetailPage() {
         <span className="text-xs text-slate-400">Versi {data.current_version}</span>
       </div>
 
-      <WorkflowStepper steps={WORKFLOW_STEPS} currentIndex={currentStep} />
+      <WorkflowStepper
+        steps={WORKFLOW_STEPS}
+        currentIndex={currentStep}
+        completed={data.status === STATUS.APPROVED || data.status === STATUS.ARCHIVED}
+      />
 
       {stage && (
         <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm font-semibold text-blue-800">{stage.title}</p>
             <span className="rounded-full border border-blue-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-blue-700">
-              Diisi oleh: {stage.actor}
+              {actorLabel}: {stage.actor}
             </span>
           </div>
           <p className="mt-1 text-xs text-blue-700">{stage.desc}</p>
@@ -494,22 +565,81 @@ export default function FollowUpDetailPage() {
 
               {(it.follow_up_history || []).length > 0 && (
                 <div className="mt-4 border-t border-slate-100 pt-3">
-                  <p className="mb-2 text-xs font-bold uppercase text-slate-500">Riwayat Tindak Lanjut</p>
-                  <div className="space-y-2">
-                    {[...it.follow_up_history].reverse().map((h, hi) => (
-                      <div key={hi} className="rounded border border-slate-200 bg-white p-2 text-xs text-slate-600">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <b className="text-slate-700">{ACTION_LABEL[h.action] || h.action}</b>
-                          <span className="text-slate-400">{h.archived_at ? new Date(h.archived_at).toLocaleString('id-ID') : '-'}</span>
+                  <div className="mb-3 flex items-center gap-2">
+                    <h4 className="text-xs font-bold uppercase text-slate-500">Riwayat Tindak Lanjut</h4>
+                    <span className="h-px flex-1 bg-slate-200" aria-hidden="true" />
+                  </div>
+                  <div className="relative space-y-6 pl-8">
+                    <span className="absolute bottom-3 left-[11px] top-3 w-px bg-slate-200" aria-hidden="true" />
+                    {[...it.follow_up_history].reverse().map((h, hi, arr) => {
+                      const style = TIMELINE_STYLE[h.action] || TIMELINE_FALLBACK;
+                      const actor =
+                        h.archived_by && String(h.archived_by) === String(user?.id)
+                          ? user?.name || 'Anda'
+                          : ACTOR_LABEL[h.actor_role] || h.actor_role || 'Sistem';
+                      return (
+                        <div key={hi} className="relative">
+                          <span className={clsx('absolute -left-8 top-3 flex h-6 w-6 items-center justify-center rounded-full border-2 border-white shadow-sm', style.iconWrap)}>
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d={style.icon} />
+                            </svg>
+                          </span>
+                          {hi < arr.length - 1 && (
+                            <span className="absolute -bottom-6 -left-8 z-10 flex h-5 w-6 items-center justify-center text-[11px] text-slate-400" aria-hidden="true">↓</span>
+                          )}
+                          <div className={clsx('rounded-lg border border-slate-200 border-l-4 bg-white p-3 shadow-sm', style.border)}>
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                              <b className="text-slate-700">{ACTION_LABEL[h.action] || h.action}</b>
+                              <span className="text-slate-400">{formatTimelineDate(h.archived_at)}</span>
+                              <span className="text-slate-400">oleh</span>
+                              <span className="font-medium text-slate-600">{actor}</span>
+                            </div>
+                            <div className="mt-2 space-y-1.5 border-t border-slate-100 pt-2 text-xs text-slate-600">
+                              {h.reason && h.action !== 'OFFICER_REALIZATION' && (
+                                <p>
+                                  <span className="font-semibold text-slate-500">{NOTE_LABEL[h.action] || 'Catatan'}:</span> {h.reason}
+                                </p>
+                              )}
+                              {h.realization?.note && (
+                                <p>
+                                  <span className="font-semibold text-slate-500">Realisasi Officer:</span> {h.realization.note}
+                                </p>
+                              )}
+                              {h.follow_up_status && (
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-semibold text-slate-500">Status:</span>
+                                  <span className={clsx('rounded-full px-2 py-0.5 text-[11px] font-semibold', STATUS_PILL[h.follow_up_status] || 'bg-slate-100 text-slate-600 ring-1 ring-slate-200')}>
+                                    {FOLLOW_UP_STATUS_LABEL[h.follow_up_status] || h.follow_up_status}
+                                  </span>
+                                </div>
+                              )}
+                              {(h.documents || []).length > 0 && (
+                                <div>
+                                  <p className="font-semibold text-slate-500">Upload bukti ({h.documents.length} file)</p>
+                                  <div className="mt-1 flex flex-wrap gap-1.5">
+                                    {h.documents.map((d) => (
+                                      <button
+                                        key={d.id}
+                                        type="button"
+                                        className="inline-flex max-w-full items-center gap-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-primary-700 hover:bg-slate-100"
+                                        title={d.original_name}
+                                        onClick={() => downloadDocument(id, d.id, d.original_name)}
+                                      >
+                                        <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                                          <path d="M14 2v6h6" />
+                                        </svg>
+                                        <span className="truncate">{d.original_name}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        {h.reason && <p className="mt-1">Catatan: {h.reason}</p>}
-                        {h.realization?.note && <p className="mt-1">Realisasi: {h.realization.note}</p>}
-                        {h.follow_up_status && (
-                          <p className="mt-1">Status: {FOLLOW_UP_STATUS_LABEL[h.follow_up_status] || h.follow_up_status}</p>
-                        )}
-                        <DocLinks registerId={id} docs={h.documents} />
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}

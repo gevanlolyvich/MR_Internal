@@ -825,8 +825,6 @@ const applyFinalAssessments = async (conn, id, assessments, actorId) => {
         action: 'MR_FINAL_RETURN',
         reason: note,
       });
-      found.item.realization = { note: null, by: null, at: null };
-      found.item.documents = [];
     } else {
       pushFollowUpHistory(found.item, {
         actorId,

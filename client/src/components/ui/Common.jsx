@@ -106,13 +106,13 @@ export function Field({ label, required, error, children, hint }) {
   );
 }
 
-export function WorkflowStepper({ steps, currentIndex, rejected = false }) {
+export function WorkflowStepper({ steps, currentIndex, rejected = false, completed = false }) {
   return (
     <div className="card mb-4 overflow-x-auto">
       <div className="flex min-w-[680px] items-center px-4 py-4">
         {steps.map((step, i) => {
-          const done = i < currentIndex;
-          const active = i === currentIndex;
+          const done = completed || i < currentIndex;
+          const active = !completed && i === currentIndex;
           return (
             <div key={step.key} className="flex flex-1 items-center">
               <div className="flex w-24 shrink-0 flex-col items-center text-center">

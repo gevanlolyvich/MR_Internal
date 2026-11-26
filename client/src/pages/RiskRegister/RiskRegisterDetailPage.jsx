@@ -7,7 +7,7 @@ import { StatusBadge, LevelBadge, ToleranceBadge } from '../../components/ui/Bad
 import { Modal, ConfirmDialog } from '../../components/ui/Modal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { WORKFLOW_STEPS, REJECTED_STATUSES } from '../../constants';
+import { STATUS, WORKFLOW_STEPS, REJECTED_STATUSES } from '../../constants';
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
@@ -175,6 +175,10 @@ export default function RiskRegisterDetailPage() {
   const rejectedNote = REJECTED_STATUSES.includes(data.status)
     ? (history?.approvals || []).slice().reverse().find((a) => a.action?.startsWith('REJECT'))
     : null;
+  const approvalHistory = (history?.approvals || []).slice().reverse();
+  const mrApproval = approvalHistory.find((a) => a.action === 'APPROVE_MR' || a.to_status === STATUS.APPROVED);
+  const archiveApproval = approvalHistory.find((a) => a.action === 'ARCHIVE' || a.to_status === STATUS.ARCHIVED);
+  const actorOf = (a, fallback) => a?.actor_name || a?.actor_username || a?.actor_role || fallback;
 
   const stepByStatus = {
     DRAFT: 0,
@@ -201,8 +205,11 @@ export default function RiskRegisterDetailPage() {
         WAITING_MR_INSTRUCTION: { title: 'MR memberi instruksi tindak lanjut', desc: 'Buka menu Tindak Lanjut untuk mengisi instruksi dan keterangan MR per item mitigasi.', actor: 'MR' },
         WAITING_OFFICER_FOLLOWUP: { title: 'Officer mengisi tindak lanjut', desc: 'Buka menu Tindak Lanjut untuk menulis realisasi dan mengunggah bukti pendukung.', actor: 'Risk Officer' },
         WAITING_MR_APPROVAL: { title: 'MR menilai hasil tindak lanjut', desc: 'Buka menu Tindak Lanjut untuk menilai setiap item; item belum sesuai dikembalikan ke Officer.', actor: 'MR' },
-        APPROVED: { title: 'Selesai', desc: 'Risk Register telah disetujui MR.', actor: '-' },
+        APPROVED: { title: 'Selesai', desc: 'Risk Register telah disetujui MR.', actor: actorOf(mrApproval, 'MR') },
+        ARCHIVED: { title: 'Diarsipkan', desc: 'Risk Register telah diarsipkan.', actor: actorOf(archiveApproval, 'MR') },
       }[data.status] || { title: data.status, desc: '', actor: '-' };
+
+  const actorLabel = data.status === STATUS.APPROVED ? 'Disetujui oleh' : data.status === STATUS.ARCHIVED ? 'Diarsipkan oleh' : 'Diisi oleh';
 
   const assessmentsPayload = () =>
     allMitigationItems.map((it) => ({
@@ -380,7 +387,12 @@ export default function RiskRegisterDetailPage() {
         <span className="text-xs text-slate-400">Versi {data.current_version}</span>
       </div>
 
-      <WorkflowStepper steps={WORKFLOW_STEPS} currentIndex={currentStep} rejected={!!rejectedNote} />
+      <WorkflowStepper
+        steps={WORKFLOW_STEPS}
+        currentIndex={currentStep}
+        rejected={!!rejectedNote}
+        completed={data.status === STATUS.APPROVED || data.status === STATUS.ARCHIVED}
+      />
 
       <div className={clsx('mb-4 rounded-md border px-4 py-3', rejectedNote ? 'border-red-200 bg-red-50' : 'border-blue-200 bg-blue-50')}>
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -388,7 +400,7 @@ export default function RiskRegisterDetailPage() {
             {stageInfo.title}
           </p>
           <span className={clsx('rounded-full border px-2 py-0.5 text-[11px] font-semibold', rejectedNote ? 'border-red-300 bg-white text-red-700' : 'border-blue-300 bg-white text-blue-700')}>
-            Diisi oleh: {stageInfo.actor}
+            {actorLabel}: {stageInfo.actor}
           </span>
         </div>
         <p className={clsx('mt-1 text-xs', rejectedNote ? 'text-red-700' : 'text-blue-700')}>{stageInfo.desc}</p>
@@ -630,27 +642,6 @@ export default function RiskRegisterDetailPage() {
                                         )}
                                       </div>
                                     </div>
-                                  </div>
-                                )}
-
-                                {(it.follow_up_history || []).length > 0 && (
-                                  <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-                                    <p className="font-semibold text-slate-500">Riwayat Risk Treatment</p>
-                                    {it.follow_up_history.map((h, hi) => (
-                                      <div key={hi} className="mt-1 border-t border-slate-200 pt-1 first:border-0 first:pt-0">
-                                        <p>Instruksi: {h.instruction?.text || h.follow_up || '-'}</p>
-                                        <p>Keterangan MR: {h.instruction?.note || '-'}</p>
-                                        <p>Realisasi: {h.realization?.note || '-'}</p>
-                                        <p>
-                                          Status: {h.follow_up_status ? statusLabel(h.follow_up_status) : '-'} · Keterangan: {h.mr_note || '-'}
-                                        </p>
-                                        <p className="text-slate-500">
-                                          {ACTION_LABEL[h.action] || h.action} · {h.reason || '-'} ·{' '}
-                                          {h.archived_at ? new Date(h.archived_at).toLocaleString('id-ID') : '-'}
-                                        </p>
-                                        <DocLinks docs={h.documents} />
-                                      </div>
-                                    ))}
                                   </div>
                                 )}
                               </li>

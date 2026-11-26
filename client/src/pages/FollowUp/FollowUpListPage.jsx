@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api, { parseError } from '../../api/client';
-import { Card, PageHeader, Spinner, EmptyState } from '../../components/ui/Common';
+import { Card, PageHeader, Spinner, EmptyState, Tabs } from '../../components/ui/Common';
 import { StatusBadge, LevelBadge } from '../../components/ui/Badges';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -11,6 +11,18 @@ const QUEUE = {
   MR: [STATUS.WAITING_MR_INSTRUCTION, STATUS.WAITING_MR_APPROVAL],
   RISK_OFFICER: [STATUS.WAITING_OFFICER_FOLLOWUP],
 };
+
+const FOLLOW_UP_TABS = [
+  { key: 'queue', label: 'Antrian' },
+  { key: 'history', label: 'Riwayat' },
+];
+
+const HISTORY_STATUSES = [
+  STATUS.WAITING_OFFICER_FOLLOWUP,
+  STATUS.WAITING_MR_APPROVAL,
+  STATUS.APPROVED,
+  STATUS.ARCHIVED,
+];
 
 const ACTION_LABEL = {
   [STATUS.WAITING_MR_INSTRUCTION]: 'Beri Instruksi',
@@ -24,12 +36,16 @@ export default function FollowUpListPage() {
   const statuses = QUEUE[user?.role] || [];
   const [items, setItems] = useState([]);
   const [filter, setFilter] = useState('ALL');
+  const [tab, setTab] = useState('queue');
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      if (user?.role === 'MR') {
+      if (tab === 'history') {
+        const res = await api.get('/risk-registers', { params: { page: 1, limit: 100 } });
+        setItems((res.data.items || []).filter((r) => HISTORY_STATUSES.includes(r.status)));
+      } else if (user?.role === 'MR') {
         const res = await api.get('/approvals', { params: { page: 1, limit: 100 } });
         setItems(res.data.items || []);
       } else if (user?.role === 'RISK_OFFICER') {
@@ -45,7 +61,7 @@ export default function FollowUpListPage() {
     } finally {
       setLoading(false);
     }
-  }, [toast, user?.role]);
+  }, [tab, toast, user?.role]);
 
   useEffect(() => {
     load();
@@ -61,22 +77,36 @@ export default function FollowUpListPage() {
   }
 
   const visible = filter === 'ALL' ? items : items.filter((r) => r.status === filter);
+  const filterStatuses = tab === 'history' ? HISTORY_STATUSES : statuses;
+  const subtitle =
+    tab === 'history'
+      ? 'Arsip Risk Register yang sudah melalui proses tindak lanjut. Klik Lihat Riwayat untuk membuka timeline.'
+      : user?.role === 'MR'
+        ? 'Antrian MR: beri instruksi tindak lanjut, lalu nilai bukti dan catatan dari Officer.'
+        : 'Risk Register yang menunggu instruksi MR untuk Anda tindak lanjuti.';
 
   return (
     <div className="pb-10">
       <PageHeader
         title="Tindak Lanjut"
-        subtitle={
-          user?.role === 'MR'
-            ? 'Antrian MR: beri instruksi tindak lanjut, lalu nilai bukti dan catatan dari Officer.'
-            : 'Risk Register yang menunggu instruksi MR untuk Anda tindak lanjuti.'
-        }
+        subtitle={subtitle}
         actions={
           <button className="btn-secondary" onClick={load} disabled={loading}>
             {loading ? 'Memuat...' : 'Muat Ulang'}
           </button>
         }
       />
+
+      <Card className="mb-4">
+        <Tabs
+          tabs={FOLLOW_UP_TABS}
+          active={tab}
+          onChange={(next) => {
+            setTab(next);
+            setFilter('ALL');
+          }}
+        />
+      </Card>
 
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
         <label className="text-xs font-semibold uppercase text-slate-500" htmlFor="follow-up-status">
@@ -88,8 +118,8 @@ export default function FollowUpListPage() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         >
-          <option value="ALL">Semua Antrian</option>
-          {statuses.map((s) => (
+          <option value="ALL">{tab === 'history' ? 'Semua Riwayat' : 'Semua Antrian'}</option>
+          {filterStatuses.map((s) => (
             <option key={s} value={s}>{STATUS_LABEL[s]}</option>
           ))}
         </select>
@@ -101,8 +131,12 @@ export default function FollowUpListPage() {
           <Spinner />
         ) : !visible.length ? (
           <EmptyState
-            title="Tidak ada tindak lanjut"
-            description="Tidak ada Risk Register yang menunggu proses pada tahap ini."
+            title={tab === 'history' ? 'Tidak ada riwayat tindak lanjut' : 'Tidak ada tindak lanjut'}
+            description={
+              tab === 'history'
+                ? 'Belum ada Risk Register yang melalui proses tindak lanjut.'
+                : 'Tidak ada Risk Register yang menunggu proses pada tahap ini.'
+            }
           />
         ) : (
           <div className="overflow-x-auto">
@@ -135,7 +169,7 @@ export default function FollowUpListPage() {
                       <div className="flex justify-end gap-1.5">
                         <Link className="btn-secondary btn-sm" to={`/risk-registers/${r.id}`}>Lihat Register</Link>
                         <Link className="btn-primary btn-sm" to={`/follow-ups/${r.id}`}>
-                          {ACTION_LABEL[r.status] || 'Buka Tindak Lanjut'}
+                          {tab === 'history' ? 'Lihat Riwayat' : ACTION_LABEL[r.status] || 'Buka Tindak Lanjut'}
                         </Link>
                       </div>
                     </td>
