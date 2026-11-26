@@ -106,6 +106,42 @@ export function Field({ label, required, error, children, hint }) {
   );
 }
 
+export function WorkflowStepper({ steps, currentIndex, rejected = false }) {
+  return (
+    <div className="card mb-4 overflow-x-auto">
+      <div className="flex min-w-[680px] items-center px-4 py-4">
+        {steps.map((step, i) => {
+          const done = i < currentIndex;
+          const active = i === currentIndex;
+          return (
+            <div key={step.key} className="flex flex-1 items-center">
+              <div className="flex w-24 shrink-0 flex-col items-center text-center">
+                <span
+                  className={clsx(
+                    'flex h-8 w-8 items-center justify-center rounded-full border text-xs font-bold',
+                    done && 'border-primary-600 bg-primary-600 text-white',
+                    active && !rejected && 'border-primary-600 bg-white text-primary-700 ring-4 ring-primary-100',
+                    active && rejected && 'border-red-500 bg-white text-red-600 ring-4 ring-red-100',
+                    !done && !active && 'border-slate-300 bg-white text-slate-400'
+                  )}
+                >
+                  {done ? '✓' : i + 1}
+                </span>
+                <span className={clsx('mt-2 text-[11px] font-semibold leading-tight', active ? 'text-primary-700' : done ? 'text-slate-700' : 'text-slate-400')}>
+                  {step.label}
+                </span>
+              </div>
+              {i < steps.length - 1 && (
+                <div className={clsx('mx-1 h-0.5 flex-1', i < currentIndex ? 'bg-primary-600' : 'bg-slate-200')} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function Pagination({ page, limit, total, onPage }) {
   const pages = Math.max(1, Math.ceil(total / limit));
   if (pages <= 1) return null;

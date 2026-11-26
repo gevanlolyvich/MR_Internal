@@ -4,7 +4,7 @@ const path = require('path');
 const repo = require('./riskRegister.repository');
 const { UPLOAD_ROOT } = require('../uploads/upload.middleware');
 const ApiError = require('../../utils/ApiError');
-const { STATUS, EDITABLE_STATUS, FOLLOW_UP_STATUS } = require('../../config/status');
+const { STATUS, EDITABLE_STATUS, FOLLOW_UP_STATUS, FOLLOW_UP_DONE, FOLLOW_UP_RETURN } = require('../../config/status');
 const { calcScore, getLevelByScore } = require('../../utils/riskLevel');
 const { query, withTransaction } = require('../../db/pool');
 const { audit } = require('../../middlewares/audit');
@@ -16,10 +16,16 @@ const CONTROL_PRESENT = ['ADA', 'TIDAK_ADA'];
 const CONTROL_ADEQUACY = ['MEMADAI', 'BELUM_MEMADAI'];
 
 const isNonEmptyString = (v) => typeof v === 'string' && v.trim().length > 0;
+const trimmed = (v) => (isNonEmptyString(v) ? v.trim() : null);
 
 const loadLevels = async () => {
   const [rows] = await query('SELECT min_score, max_score, level, color FROM risk_level_master ORDER BY min_score ASC');
   return rows;
+};
+
+const activeMrIds = async () => {
+  const [rows] = await query(`SELECT id FROM users WHERE role = 'MR' AND status = 'ACTIVE'`);
+  return rows.map((r) => r.id);
 };
 
 const levelOf = (score, levels) => {
@@ -95,7 +101,6 @@ const validatePayload = async (payload, user) => {
       mitigationItems.forEach((mi, miIdx) => {
         const miPrefix = `${ePrefix}.mitigation_items[${miIdx}]`;
         if (!isNonEmptyString(mi && mi.description)) push(`${miPrefix}.description`, 'Mitigation item tidak boleh kosong');
-        if (!isNonEmptyString(mi && mi.follow_up)) push(`${miPrefix}.follow_up`, 'Tindak lanjut wajib diisi');
       });
 
       const aftL = Number(ev.after && ev.after.likelihood);
@@ -121,15 +126,31 @@ const validatePayload = async (payload, user) => {
           inherent: { likelihood: inhL, impact: inhI, score: inherent_score, ...levelOf(inherent_score, levels) },
           control: { present: control.present, adequacy: control.adequacy, implementation: pct },
           residual: { likelihood: resL, impact: resI, score: residual_score, ...levelOf(residual_score, levels) },
-          mitigation_items: mitigationItems.map((mi, idx) => ({
-            id: mi.id || crypto.randomUUID(),
-            description: mi.description.trim(),
-            follow_up: mi.follow_up.trim(),
-            order: idx + 1,
-            documents: Array.isArray(mi.documents) ? mi.documents : [],
-            follow_up_status: null,
-            follow_up_history: Array.isArray(mi.follow_up_history) ? mi.follow_up_history : [],
-          })),
+          mitigation_items: mitigationItems.map((mi, idx) => {
+            const instructionText = trimmed(mi.instruction?.text) || trimmed(mi.follow_up) || '';
+            const oldInstruction = mi.instruction && typeof mi.instruction === 'object' ? mi.instruction : {};
+            return {
+              id: mi.id || crypto.randomUUID(),
+              description: mi.description.trim(),
+              follow_up: instructionText,
+              instruction: {
+                text: instructionText,
+                note: trimmed(oldInstruction.note) || trimmed(mi.instruction_note),
+                by: oldInstruction.by || null,
+                at: oldInstruction.at || null,
+              },
+              realization: {
+                note: trimmed(mi.realization?.note) || trimmed(mi.realization_note),
+                by: mi.realization?.by || mi.realization_by || null,
+                at: mi.realization?.at || mi.realization_at || null,
+              },
+              mr_note: trimmed(mi.mr_note),
+              order: idx + 1,
+              documents: Array.isArray(mi.documents) ? mi.documents : [],
+              follow_up_status: Object.values(FOLLOW_UP_STATUS).includes(mi.follow_up_status) ? mi.follow_up_status : null,
+              follow_up_history: Array.isArray(mi.follow_up_history) ? mi.follow_up_history : [],
+            };
+          }),
           after: { likelihood: aftL, impact: aftI, score: after_score, ...levelOf(after_score, levels) },
         });
       }
@@ -220,7 +241,7 @@ const assertComplete = (header, nested) => {
       if (!hasResidual) errors.push({ field: `${base}::residual`, message: 'Residual Risk belum lengkap' });
       if (!mits.length) errors.push({ field: `${base}::mitigation_items`, message: 'Risk Treatment wajib memiliki minimal 1 item mitigasi' });
       mits.forEach((mi, mii) => {
-        if (!isNonEmptyString(mi && mi.follow_up)) errors.push({ field: `${base}::mitigation_items[${mii}].follow_up`, message: 'Tindak lanjut wajib diisi' });
+        if (!isNonEmptyString(mi && mi.description)) errors.push({ field: `${base}::mitigation_items[${mii}].description`, message: 'Deskripsi mitigasi wajib diisi' });
       });
       if (!hasAfter) errors.push({ field: `${base}::after`, message: 'Risk After Mitigation belum lengkap' });
     });
@@ -314,6 +335,8 @@ const updateRegister = async (id, payload, req) => {
   return getDetail(id, user);
 };
 
+const resolveSubmitTarget = async () => STATUS.WAITING_OWNER_APPROVAL;
+
 const submitRegister = async (id, req) => {
   const user = req.user;
   const header = await repo.findHeader(id);
@@ -331,8 +354,10 @@ const submitRegister = async (id, req) => {
   const ownerOk = await repo.findValidOwner(header.risk_owner_id, header.branch_id);
   if (!ownerOk) throw ApiError.badRequest('Risk Owner tidak valid (harus aktif dan satu branch dengan Risk Officer)');
 
+  const targetStatus = await resolveSubmitTarget(id, header);
+
   await withTransaction(async (conn) => {
-    const affected = await repo.updateStatusGuarded(conn, id, header.status, STATUS.WAITING_OWNER_APPROVAL, {
+    const affected = await repo.updateStatusGuarded(conn, id, header.status, targetStatus, {
       submitted_at: new Date(),
     });
     if (!affected) throw ApiError.conflict('Status Risk Register telah berubah, muat ulang halaman');
@@ -343,25 +368,25 @@ const submitRegister = async (id, req) => {
       actor_id: user.id,
       actor_role: user.role,
       from_status: header.status,
-      to_status: STATUS.WAITING_OWNER_APPROVAL,
+      to_status: targetStatus,
     });
 
     await conn.query(
       `UPDATE risk_mitigation_histories
           SET action = 'SUBMIT', approval_status = ?, rejection_reason = NULL
         WHERE risk_register_id = ? AND version = ?`,
-      [STATUS.WAITING_OWNER_APPROVAL, id, header.current_version]
+      [targetStatus, id, header.current_version]
     );
   });
 
   await notify({
     userIds: [header.risk_owner_id],
-    title: 'Risk Register menunggu approval',
-    message: `${header.risk_code} membutuhkan approval Anda.`,
+    title: 'Menunggu approval Risk Register',
+    message: `${header.risk_code} membutuhkan approval Risk Owner sebelum diteruskan ke MR.`,
     riskRegisterId: id,
   });
 
-  audit({ req, action: 'SUBMIT_RISK_REGISTER', entity: 'risk_registers', entityId: id, oldValue: { status: header.status }, newValue: { status: STATUS.WAITING_OWNER_APPROVAL } });
+  audit({ req, action: 'SUBMIT_RISK_REGISTER', entity: 'risk_registers', entityId: id, oldValue: { status: header.status }, newValue: { status: targetStatus } });
   return getDetail(id, user);
 };
 
@@ -454,7 +479,8 @@ const findMitigationItem = (nested, itemId) => {
   for (const cat of nested) {
     for (const ev of cat.events || []) {
       const items = parseMitigationItems(ev.mitigation_items);
-      const index = items.findIndex((it) => it.id === itemId);
+      ev.mitigation_items = items;
+      const index = items.findIndex((it) => it.id != null && String(it.id) === String(itemId));
       if (index !== -1) return { event: ev, items, item: items[index], index };
     }
   }
@@ -473,11 +499,17 @@ const collectDocuments = (items) => {
 };
 
 const assertDocumentEditable = (header, user) => {
-  if (!EDITABLE_STATUS.includes(header.status)) {
-    throw ApiError.conflict(`Tidak dapat mengunggah dokumen pada status ${header.status}`);
+  if (header.status !== STATUS.WAITING_OFFICER_FOLLOWUP) {
+    throw ApiError.conflict('Bukti dokumen hanya dapat diunggah pada tahap tindak lanjut Officer');
   }
-  if (user.role !== ROLES.MR && header.risk_officer_id !== user.id) {
+  if (header.risk_officer_id !== user.id) {
     throw ApiError.forbidden('Anda hanya dapat mengelola dokumen Risk Register milik Anda');
+  }
+};
+
+const assertItemEditable = (item) => {
+  if (item?.follow_up_status === FOLLOW_UP_DONE) {
+    throw ApiError.conflict('Item yang sudah dinyatakan sesuai tidak dapat diubah');
   }
 };
 
@@ -486,12 +518,14 @@ const uploadDocuments = async (id, itemId, files, req) => {
   if (!header) throw ApiError.notFound('Risk Register tidak ditemukan');
   assertDocumentEditable(header, req.user);
   if (!files || !files.length) throw ApiError.badRequest('Tidak ada dokumen yang diunggah');
+  const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
 
   try {
     await withTransaction(async (conn) => {
       const nested = await repo.findNested(id, conn);
       const found = findMitigationItem(nested, itemId);
       if (!found) throw ApiError.notFound('Item mitigasi tidak ditemukan');
+      assertItemEditable(found.item);
       const existingDocs = found.item.documents || [];
       if (existingDocs.length + files.length > 5) throw ApiError.badRequest('Maksimal 5 dokumen per item mitigasi');
       const docs = files.map((f) => ({
@@ -504,6 +538,9 @@ const uploadDocuments = async (id, itemId, files, req) => {
         uploaded_by: req.user.id,
       }));
       found.item.documents = [...existingDocs, ...docs];
+      if (note) {
+        found.item.realization = { note, by: req.user.id, at: new Date().toISOString() };
+      }
       await repo.updateEventMitigationItems(conn, found.event.id, found.items);
     });
   } catch (err) {
@@ -522,7 +559,7 @@ const uploadDocuments = async (id, itemId, files, req) => {
     action: 'UPLOAD_MITIGATION_DOCUMENT',
     entity: 'risk_registers',
     entityId: Number(id),
-    newValue: { itemId, files: files.map((f) => f.originalname) },
+    newValue: { itemId, files: files.map((f) => f.originalname), ...(note ? { note } : {}) },
   });
   return getDetail(id, req.user);
 };
@@ -535,9 +572,10 @@ const removeDocument = async (id, itemId, docId, req) => {
   let removed = null;
   await withTransaction(async (conn) => {
     const nested = await repo.findNested(id, conn);
-    const found = findMitigationItem(nested, itemId);
-    if (!found) throw ApiError.notFound('Item mitigasi tidak ditemukan');
-    const idx = (found.item.documents || []).findIndex((d) => d.id === docId);
+      const found = findMitigationItem(nested, itemId);
+      if (!found) throw ApiError.notFound('Item mitigasi tidak ditemukan');
+      assertItemEditable(found.item);
+      const idx = (found.item.documents || []).findIndex((d) => d.id === docId);
     if (idx === -1) throw ApiError.notFound('Dokumen tidak ditemukan pada item mitigasi ini');
     [removed] = found.item.documents.splice(idx, 1);
     await repo.updateEventMitigationItems(conn, found.event.id, found.items);
@@ -572,37 +610,265 @@ const getDocumentForDownload = async (id, docId, user) => {
   return { doc, filePath };
 };
 
-const setFollowUpStatuses = async (id, statuses, req) => {
+const pushFollowUpHistory = (item, meta) => {
+  item.follow_up_history = Array.isArray(item.follow_up_history) ? item.follow_up_history : [];
+  item.follow_up_history.push({
+    archived_at: new Date().toISOString(),
+    archived_by: meta.actorId,
+    actor_role: meta.actorRole,
+    action: meta.action,
+    reason: meta.reason || null,
+    instruction: item.instruction ? { ...item.instruction } : null,
+    follow_up: item.follow_up || null,
+    realization: item.realization ? { ...item.realization } : null,
+    mr_note: item.mr_note || null,
+    follow_up_status: item.follow_up_status || null,
+    documents: (item.documents || []).map((d) => ({ ...d })),
+  });
+};
+
+const updateCurrentMitigationRow = async (conn, id, header, action, status, reason = null) => {
+  await conn.query(
+    `UPDATE risk_mitigation_histories
+        SET action = ?, approval_status = ?, rejection_reason = ?
+      WHERE risk_register_id = ? AND version = ?`,
+    [action, status, reason, id, header.current_version]
+  );
+};
+
+const validateInstructionItems = (items) => {
+  const errors = [];
+  if (!Array.isArray(items) || !items.length) {
+    return [{ field: 'items', message: 'Minimal 1 instruksi tindak lanjut wajib dikirim' }];
+  }
+  items.forEach((s, i) => {
+    if (!s || !s.itemId) errors.push({ field: `items[${i}].itemId`, message: 'Item mitigasi wajib dipilih' });
+    if (!isNonEmptyString(s?.text)) errors.push({ field: `items[${i}].text`, message: 'Instruksi tindak lanjut wajib diisi' });
+    if (!isNonEmptyString(s?.note)) errors.push({ field: `items[${i}].note`, message: 'Keterangan MR wajib diisi' });
+  });
+  return errors;
+};
+
+const setMrInstructions = async (id, items, req) => {
+  const user = req.user;
+  if (user.role !== ROLES.MR) throw ApiError.forbidden('Hanya MR yang dapat memberi instruksi tindak lanjut');
+  const header = await repo.findHeader(id);
+  if (!header) throw ApiError.notFound('Risk Register tidak ditemukan');
+  if (header.status !== STATUS.WAITING_MR_INSTRUCTION) {
+    throw ApiError.conflict('Register tidak menunggu instruksi MR', { current_status: header.status });
+  }
+  const errors = validateInstructionItems(items);
+  if (errors.length) throw ApiError.badRequest('Instruksi tindak lanjut tidak valid', errors);
+
+  await withTransaction(async (conn) => {
+    const nested = await repo.findNested(id, conn);
+    const touched = new Map();
+    items.forEach((s) => {
+      const found = findMitigationItem(nested, s.itemId);
+      if (!found) throw ApiError.notFound('Item mitigasi tidak ditemukan');
+      const text = s.text.trim();
+      found.item.follow_up = text;
+      found.item.instruction = { text, note: s.note.trim(), by: user.id, at: new Date().toISOString() };
+      found.item.realization = { note: null, by: null, at: null };
+      found.item.follow_up_status = null;
+      found.item.mr_note = null;
+      pushFollowUpHistory(found.item, {
+        actorId: user.id,
+        actorRole: user.role,
+        action: 'MR_INSTRUCTION',
+        reason: s.note.trim(),
+      });
+      touched.set(found.event.id, found.items);
+    });
+    for (const [eventId, eventItems] of touched) {
+      await repo.updateEventMitigationItems(conn, eventId, eventItems);
+    }
+
+    const affected = await repo.updateStatusGuarded(conn, id, header.status, STATUS.WAITING_OFFICER_FOLLOWUP);
+    if (!affected) throw ApiError.conflict('Status Risk Register telah berubah, muat ulang halaman');
+    await repo.insertApprovalHistory(conn, {
+      risk_register_id: id,
+      action: 'MR_INSTRUCTION',
+      actor_id: user.id,
+      actor_role: user.role,
+      from_status: header.status,
+      to_status: STATUS.WAITING_OFFICER_FOLLOWUP,
+    });
+    await updateCurrentMitigationRow(conn, id, header, 'MR_INSTRUCTION', STATUS.WAITING_OFFICER_FOLLOWUP);
+  });
+
+  await notify({
+    userIds: [header.risk_officer_id],
+    title: 'Instruksi tindak lanjut tersedia',
+    message: `${header.risk_code} telah diberi instruksi tindak lanjut oleh MR. Unggah bukti dan keterangan realisasi Anda.`,
+    riskRegisterId: id,
+  });
+  audit({
+    req,
+    action: 'MR_INSTRUCTION',
+    entity: 'risk_registers',
+    entityId: Number(id),
+    oldValue: { status: header.status },
+    newValue: { status: STATUS.WAITING_OFFICER_FOLLOWUP },
+  });
+  return getDetail(id, user);
+};
+
+const validateRealizationItems = (items) => {
+  const errors = [];
+  if (!Array.isArray(items) || !items.length) {
+    return [{ field: 'items', message: 'Minimal 1 keterangan realisasi wajib dikirim' }];
+  }
+  items.forEach((s, i) => {
+    if (!s || !s.itemId) errors.push({ field: `items[${i}].itemId`, message: 'Item mitigasi wajib dipilih' });
+    if (!isNonEmptyString(s?.note)) errors.push({ field: `items[${i}].note`, message: 'Keterangan realisasi wajib diisi' });
+  });
+  return errors;
+};
+
+const submitFollowUpRealization = async (id, items, req) => {
+  const user = req.user;
+  if (user.role !== ROLES.RISK_OFFICER) throw ApiError.forbidden('Hanya Risk Officer yang dapat mengirim realisasi');
+  const header = await repo.findHeader(id);
+  if (!header) throw ApiError.notFound('Risk Register tidak ditemukan');
+  if (header.risk_officer_id !== user.id) throw ApiError.forbidden('Anda hanya dapat mengelola Risk Register milik Anda');
+  if (header.status !== STATUS.WAITING_OFFICER_FOLLOWUP) {
+    throw ApiError.conflict('Register tidak menunggu realisasi Officer', { current_status: header.status });
+  }
+  const errors = validateRealizationItems(items);
+  if (errors.length) throw ApiError.badRequest('Realisasi tindak lanjut tidak valid', errors);
+
+  await withTransaction(async (conn) => {
+    const nested = await repo.findNested(id, conn);
+    const touched = new Map();
+    items.forEach((s) => {
+      const found = findMitigationItem(nested, s.itemId);
+      if (!found) throw ApiError.notFound('Item mitigasi tidak ditemukan');
+      assertItemEditable(found.item);
+      found.item.realization = { note: s.note.trim(), by: user.id, at: new Date().toISOString() };
+      pushFollowUpHistory(found.item, {
+        actorId: user.id,
+        actorRole: user.role,
+        action: 'OFFICER_REALIZATION',
+        reason: s.note.trim(),
+      });
+      touched.set(found.event.id, found.items);
+    });
+    for (const [eventId, eventItems] of touched) {
+      await repo.updateEventMitigationItems(conn, eventId, eventItems);
+    }
+
+    const affected = await repo.updateStatusGuarded(conn, id, header.status, STATUS.WAITING_MR_APPROVAL);
+    if (!affected) throw ApiError.conflict('Status Risk Register telah berubah, muat ulang halaman');
+    await repo.insertApprovalHistory(conn, {
+      risk_register_id: id,
+      action: 'OFFICER_REALIZATION',
+      actor_id: user.id,
+      actor_role: user.role,
+      from_status: header.status,
+      to_status: STATUS.WAITING_MR_APPROVAL,
+    });
+    await updateCurrentMitigationRow(conn, id, header, 'OFFICER_REALIZATION', STATUS.WAITING_MR_APPROVAL);
+  });
+
+  await notify({
+    userIds: await activeMrIds(),
+    title: 'Hasil tindak lanjut menunggu penilaian MR',
+    message: `${header.risk_code} telah dilengkapi bukti dan catatan realisasi. Mohon dinilai.`,
+    riskRegisterId: id,
+  });
+  audit({
+    req,
+    action: 'OFFICER_REALIZATION',
+    entity: 'risk_registers',
+    entityId: Number(id),
+    oldValue: { status: header.status },
+    newValue: { status: STATUS.WAITING_MR_APPROVAL },
+  });
+  return getDetail(id, user);
+};
+
+const validateFinalAssessments = (assessments) => {
+  const errors = [];
+  if (!Array.isArray(assessments) || !assessments.length) {
+    return [{ field: 'assessments', message: 'Minimal 1 penilaian akhir wajib dikirim' }];
+  }
+  assessments.forEach((s, i) => {
+    if (!s || !s.itemId) errors.push({ field: `assessments[${i}].itemId`, message: 'Item mitigasi wajib dipilih' });
+    if (!s || !Object.values(FOLLOW_UP_STATUS).includes(s.status)) {
+      errors.push({ field: `assessments[${i}].status`, message: 'Status tindak lanjut tidak valid' });
+    }
+    if (!isNonEmptyString(s?.note)) errors.push({ field: `assessments[${i}].note`, message: 'Keterangan MR wajib diisi' });
+  });
+  return errors;
+};
+
+const applyFinalAssessments = async (conn, id, assessments, actorId) => {
+  const nested = await repo.findNested(id, conn);
+  const touched = new Map();
+  assessments.forEach((s) => {
+    const found = findMitigationItem(nested, s.itemId);
+    if (!found) throw ApiError.notFound('Item mitigasi tidak ditemukan');
+    const note = s.note.trim();
+    if (found.item.follow_up_status === FOLLOW_UP_DONE) {
+      const unchanged = found.item.follow_up_status === s.status && found.item.mr_note === note;
+      if (!unchanged) throw ApiError.conflict('Penilaian MR pada item yang sudah sesuai tidak dapat diubah');
+      return;
+    }
+    const isReturn = FOLLOW_UP_RETURN.includes(s.status);
+    found.item.follow_up_status = s.status;
+    found.item.mr_note = note;
+    if (isReturn) {
+      pushFollowUpHistory(found.item, {
+        actorId,
+        actorRole: ROLES.MR,
+        action: 'MR_FINAL_RETURN',
+        reason: note,
+      });
+      found.item.realization = { note: null, by: null, at: null };
+      found.item.documents = [];
+    } else {
+      pushFollowUpHistory(found.item, {
+        actorId,
+        actorRole: ROLES.MR,
+        action: 'MR_FINAL',
+        reason: note,
+      });
+    }
+    touched.set(found.event.id, found.items);
+  });
+  for (const [eventId, eventItems] of touched) {
+    await repo.updateEventMitigationItems(conn, eventId, eventItems);
+  }
+};
+
+const resolveMrFinalStatus = async (id, assessments) => {
+  if (assessments) {
+    const allDone = assessments.every((a) => a.status === FOLLOW_UP_DONE);
+    return allDone ? STATUS.APPROVED : STATUS.WAITING_OFFICER_FOLLOWUP;
+  }
+  const nested = await repo.findNested(id);
+  const allDone = nested.every((cat) =>
+    (cat.events || []).every((ev) =>
+      parseMitigationItems(ev.mitigation_items).every((it) => it.follow_up_status === FOLLOW_UP_DONE)
+    )
+  );
+  return allDone ? STATUS.APPROVED : STATUS.WAITING_OFFICER_FOLLOWUP;
+};
+
+const setFollowUpStatuses = async (id, assessments, req) => {
   if (req.user.role !== ROLES.MR) throw ApiError.forbidden('Hanya MR yang dapat menilai tindak lanjut');
   const header = await repo.findHeader(id);
   if (!header) throw ApiError.notFound('Risk Register tidak ditemukan');
   if (header.status !== STATUS.WAITING_MR_APPROVAL) {
     throw ApiError.conflict('Status register tidak menunggu approval MR', { current_status: header.status });
   }
-  if (!Array.isArray(statuses) || !statuses.length) {
-    throw ApiError.badRequest('Minimal 1 status tindak lanjut wajib dikirim');
-  }
-  const errors = [];
-  statuses.forEach((s, i) => {
-    if (!s || !s.itemId) errors.push({ field: `items[${i}].itemId`, message: 'Item mitigasi wajib dipilih' });
-    if (!s || !Object.values(FOLLOW_UP_STATUS).includes(s.status)) {
-      errors.push({ field: `items[${i}].status`, message: 'Status tindak lanjut tidak valid' });
-    }
-  });
-  if (errors.length) throw ApiError.badRequest('Status tindak lanjut tidak valid', errors);
+  const errors = validateFinalAssessments(assessments);
+  if (errors.length) throw ApiError.badRequest('Penilaian akhir MR tidak valid', errors);
 
   await withTransaction(async (conn) => {
-    const nested = await repo.findNested(id, conn);
-    const touched = new Map();
-    statuses.forEach((s) => {
-      const found = findMitigationItem(nested, s.itemId);
-      if (!found) throw ApiError.notFound('Item mitigasi tidak ditemukan');
-      found.item.follow_up_status = s.status;
-      touched.set(found.event.id, found.items);
-    });
-    for (const [eventId, items] of touched) {
-      await repo.updateEventMitigationItems(conn, eventId, items);
-    }
+    await applyFinalAssessments(conn, id, assessments, req.user.id);
+    await assertFollowUpStatusesComplete(id, conn);
   });
 
   audit({
@@ -610,18 +876,18 @@ const setFollowUpStatuses = async (id, statuses, req) => {
     action: 'SET_FOLLOW_UP_STATUS',
     entity: 'risk_registers',
     entityId: Number(id),
-    newValue: { statuses },
+    newValue: { assessments },
   });
   return getDetail(id, req.user);
 };
 
-const assertFollowUpStatusesComplete = async (id) => {
-  const nested = await repo.findNested(id);
+const assertFollowUpStatusesComplete = async (id, conn) => {
+  const nested = await repo.findNested(id, conn);
   const missing = [];
   nested.forEach((cat) => {
     (cat.events || []).forEach((ev) => {
       parseMitigationItems(ev.mitigation_items).forEach((it) => {
-        if (!Object.values(FOLLOW_UP_STATUS).includes(it.follow_up_status)) {
+        if (!Object.values(FOLLOW_UP_STATUS).includes(it.follow_up_status) || !isNonEmptyString(it.mr_note)) {
           missing.push({
             itemId: it.id || null,
             event: ev.name,
@@ -632,8 +898,8 @@ const assertFollowUpStatusesComplete = async (id) => {
     });
   });
   if (missing.length) {
-    throw ApiError.badRequest('Status tindak lanjut belum lengkap', [
-      { field: 'follow_up_status', message: `${missing.length} item mitigasi belum diberi status`, items: missing },
+    throw ApiError.badRequest('Penilaian akhir MR belum lengkap', [
+      { field: 'assessments', message: `${missing.length} item mitigasi belum diberi status/keterangan`, items: missing },
     ]);
   }
 };
@@ -645,19 +911,14 @@ const archiveFollowUps = async (conn, id, meta) => {
       const items = parseMitigationItems(ev.mitigation_items);
       let changed = false;
       items.forEach((it) => {
-        const hasCurrent = it.follow_up || (it.documents || []).length || it.follow_up_status;
+        const hasCurrent =
+          it.follow_up ||
+          it.realization?.note ||
+          it.mr_note ||
+          (it.documents || []).length ||
+          it.follow_up_status;
         if (!hasCurrent) return;
-        it.follow_up_history = Array.isArray(it.follow_up_history) ? it.follow_up_history : [];
-        it.follow_up_history.push({
-          archived_at: new Date().toISOString(),
-          archived_by: meta.actorId,
-          actor_role: meta.actorRole,
-          action: meta.action,
-          reason: meta.reason || null,
-          follow_up: it.follow_up || null,
-          follow_up_status: it.follow_up_status || null,
-          documents: (it.documents || []).map((d) => ({ ...d })),
-        });
+        pushFollowUpHistory(it, meta);
         changed = true;
       });
       if (changed) await repo.updateEventMitigationItems(conn, ev.id, items);
@@ -676,7 +937,12 @@ module.exports = {
   uploadDocuments,
   removeDocument,
   getDocumentForDownload,
+  setMrInstructions,
+  submitFollowUpRealization,
   setFollowUpStatuses,
+  validateFinalAssessments,
+  applyFinalAssessments,
+  resolveMrFinalStatus,
   assertFollowUpStatusesComplete,
   archiveFollowUps,
   loadLevels,

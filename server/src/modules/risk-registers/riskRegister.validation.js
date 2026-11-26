@@ -26,4 +26,28 @@ const listRules = [
 const itemIdRule = param('itemId').notEmpty().withMessage('Item mitigasi tidak valid');
 const docIdRule = param('docId').notEmpty().withMessage('Dokumen tidak valid');
 
-module.exports = { idRule, createRules, updateRules, listRules, itemIdRule, docIdRule };
+const instructionRules = [
+  idRule,
+  body('items').isArray({ min: 1 }).withMessage('Minimal 1 instruksi tindak lanjut wajib dikirim'),
+  body('items.*.itemId').notEmpty().withMessage('Item mitigasi wajib dipilih'),
+  body('items.*.text').trim().notEmpty().withMessage('Instruksi tindak lanjut wajib diisi'),
+  body('items.*.note').trim().notEmpty().withMessage('Keterangan MR wajib diisi'),
+];
+
+const realizationRules = [
+  idRule,
+  body('items').isArray({ min: 1 }).withMessage('Minimal 1 keterangan realisasi wajib dikirim'),
+  body('items.*.itemId').notEmpty().withMessage('Item mitigasi wajib dipilih'),
+  body('items.*.note').trim().notEmpty().withMessage('Keterangan realisasi wajib diisi'),
+];
+
+module.exports = {
+  idRule,
+  createRules,
+  updateRules,
+  listRules,
+  itemIdRule,
+  docIdRule,
+  instructionRules,
+  realizationRules,
+};

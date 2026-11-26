@@ -3,7 +3,16 @@ const { authenticate, authorize } = require('../../middlewares/auth');
 const validate = require('../../middlewares/validate');
 const controller = require('./riskRegister.controller');
 const { documentUpload } = require('../uploads/upload.middleware');
-const { idRule, createRules, updateRules, listRules, itemIdRule, docIdRule } = require('./riskRegister.validation');
+const {
+  idRule,
+  createRules,
+  updateRules,
+  listRules,
+  itemIdRule,
+  docIdRule,
+  instructionRules,
+  realizationRules,
+} = require('./riskRegister.validation');
 
 router.use(authenticate);
 
@@ -16,6 +25,8 @@ router.get('/:id/history', idRule, validate, authorize('risk-register:view'), co
 router.post('/', authorize('risk-register:create'), createRules, validate, controller.create);
 router.put('/:id', authorize('risk-register:edit'), updateRules, validate, controller.update);
 router.post('/:id/submit', idRule, validate, authorize('risk-register:submit'), controller.submit);
+router.post('/:id/mr-instruction', instructionRules, validate, authorize('approval:mr'), controller.setMrInstructions);
+router.post('/:id/follow-up-realization', realizationRules, validate, authorize('risk-register:submit'), controller.submitFollowUpRealization);
 router.delete('/:id', idRule, validate, authorize('risk-register:edit'), controller.remove);
 
 router.get(

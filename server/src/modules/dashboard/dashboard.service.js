@@ -1,5 +1,5 @@
 const { query } = require('../../db/pool');
-const { STATUS } = require('../../config/status');
+const { STATUS, STATUS_LABEL } = require('../../config/status');
 const { ROLES } = require('../../config/roles');
 const { getTolerance } = require('../../utils/riskLevel');
 
@@ -21,6 +21,36 @@ const scopeWhere = (user) => {
   return ['', []];
 };
 
+const COUNTER_ORDER = [
+  'waiting_owner',
+  'waiting_mr_instruction',
+  'waiting_officer_followup',
+  'waiting_mr',
+];
+
+const COUNTER_META = {
+  waiting_owner: {
+    status: STATUS.WAITING_OWNER_APPROVAL,
+    label: STATUS_LABEL[STATUS.WAITING_OWNER_APPROVAL],
+    description: 'Register menunggu approval Risk Owner sebelum instruksi MR.',
+  },
+  waiting_mr_instruction: {
+    status: STATUS.WAITING_MR_INSTRUCTION,
+    label: STATUS_LABEL[STATUS.WAITING_MR_INSTRUCTION],
+    description: 'Owner telah menyetujui; MR memberi instruksi per item mitigasi.',
+  },
+  waiting_officer_followup: {
+    status: STATUS.WAITING_OFFICER_FOLLOWUP,
+    label: STATUS_LABEL[STATUS.WAITING_OFFICER_FOLLOWUP],
+    description: 'Officer mengisi realisasi dan mengunggah bukti tindak lanjut.',
+  },
+  waiting_mr: {
+    status: STATUS.WAITING_MR_APPROVAL,
+    label: STATUS_LABEL[STATUS.WAITING_MR_APPROVAL],
+    description: 'MR menilai tiap item: Sesuai / Selesai, Belum Sesuai, atau Belum Ditindaklanjuti.',
+  },
+};
+
 const getDashboard = async (user) => {
   const [scopeSql, scopeParams] = scopeWhere(user);
   const where = scopeSql ? `WHERE ${scopeSql}` : '';
@@ -31,6 +61,8 @@ const getDashboard = async (user) => {
         COUNT(*) AS total_risk,
         SUM(rr.status = '${STATUS.APPROVED}') AS active_risk,
         SUM(rr.status = '${STATUS.WAITING_OWNER_APPROVAL}') AS waiting_owner,
+        SUM(rr.status = '${STATUS.WAITING_MR_INSTRUCTION}') AS waiting_mr_instruction,
+        SUM(rr.status = '${STATUS.WAITING_OFFICER_FOLLOWUP}') AS waiting_officer_followup,
         SUM(rr.status = '${STATUS.WAITING_MR_APPROVAL}') AS waiting_mr,
         SUM(rr.status IN ('${STATUS.REJECTED_BY_OWNER}','${STATUS.REJECTED_BY_MR}')) AS rejected_risk,
         SUM(rr.status = '${STATUS.DRAFT}') AS draft_risk
@@ -116,11 +148,24 @@ const getDashboard = async (user) => {
     [...scopeParams, tolerance.max_score]
   );
 
+  const workflow = {
+    order: COUNTER_ORDER,
+    steps: COUNTER_ORDER.map((key) => ({
+      key,
+      ...COUNTER_META[key],
+      total: Number(totals[0][key] || 0),
+    })),
+  };
+
   return {
+    status_labels: STATUS_LABEL,
+    workflow,
     cards: {
       total_risk: Number(totals[0].total_risk),
       active_risk: Number(totals[0].active_risk || 0),
       waiting_owner: Number(totals[0].waiting_owner || 0),
+      waiting_mr_instruction: Number(totals[0].waiting_mr_instruction || 0),
+      waiting_officer_followup: Number(totals[0].waiting_officer_followup || 0),
       waiting_mr: Number(totals[0].waiting_mr || 0),
       rejected_risk: Number(totals[0].rejected_risk || 0),
       draft_risk: Number(totals[0].draft_risk || 0),
@@ -135,11 +180,15 @@ const getDashboard = async (user) => {
       by_category: byCategory.map((r) => ({ label: r.label, value: Number(r.total) })),
       by_branch: byBranch.map((r) => ({ label: r.label, value: Number(r.total) })),
       by_level: levels.map((r) => ({ label: r.level, value: Number(r.total), color: r.color })),
-      by_status: byStatus.map((r) => ({ label: r.label, value: Number(r.total) })),
+      by_status: byStatus.map((r) => ({
+        label: STATUS_LABEL[r.label] || r.label,
+        status: r.label,
+        value: Number(r.total),
+      })),
       by_year: byYear.map((r) => ({ label: String(r.label), value: Number(r.total) })),
     },
     tolerance: { max_score: tolerance.max_score, note: tolerance.note },
   };
 };
 
-module.exports = { getDashboard, SCORE_SUB };
+module.exports = { getDashboard, SCORE_SUB, COUNTER_ORDER, COUNTER_META };

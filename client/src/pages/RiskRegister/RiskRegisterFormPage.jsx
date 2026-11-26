@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import clsx from 'clsx';
-import api, { parseError, downloadDocument } from '../../api/client';
+import api, { parseError } from '../../api/client';
 import { Card, PageHeader, Spinner, Field, CollapsibleSection } from '../../components/ui/Common';
 import { LevelBadge } from '../../components/ui/Badges';
-import { ConfirmDialog } from '../../components/ui/Modal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { SECTIONS } from '../../constants';
@@ -20,7 +19,7 @@ const blankCause = () => ({
   work_unit: '',
 });
 
-const blankMitigationItem = () => ({ key: uid(), description: '', follow_up: '' });
+const blankMitigationItem = () => ({ key: uid(), description: '', instruction: null, realization: null, mr_note: '' });
 
 const blankEvent = () => ({
   key: uid(),
@@ -52,7 +51,6 @@ export default function RiskRegisterFormPage() {
   const [errors, setErrors] = useState([]);
   const [active, setActive] = useState('objective');
   const [openMap, setOpenMap] = useState({ objective: true });
-  const [confirmSubmit, setConfirmSubmit] = useState(false);
   const [initialVersion, setInitialVersion] = useState(null);
 
   const [owners, setOwners] = useState([]);
@@ -142,7 +140,12 @@ export default function RiskRegisterFormPage() {
                   key: uid(),
                   id: typeof it === 'string' ? undefined : it?.id,
                   description: typeof it === 'string' ? it : (it && it.description) || '',
-                  follow_up: typeof it === 'string' ? '' : (it && it.follow_up) || '',
+                  instruction:
+                    typeof it === 'string'
+                      ? null
+                      : it?.instruction || (it?.follow_up ? { text: it.follow_up, note: '' } : null),
+                  realization: typeof it === 'string' ? null : it?.realization || null,
+                  mr_note: typeof it === 'string' ? '' : it?.mr_note || '',
                   documents: typeof it === 'string' ? [] : it?.documents || [],
                   follow_up_status: typeof it === 'string' ? null : it?.follow_up_status || null,
                   follow_up_history: typeof it === 'string' ? [] : it?.follow_up_history || [],
@@ -230,7 +233,6 @@ export default function RiskRegisterFormPage() {
         if (!ev.mitigation_items.length) push(`${ep}.mitigation_items`, 'Minimal 1 item mitigasi wajib diisi');
         ev.mitigation_items.forEach((mi, mii) => {
           if (!String(mi.description || '').trim()) push(`${ep}.mitigation_items[${mii}].description`, 'Tindakan mitigasi tidak boleh kosong');
-          if (!String(mi.follow_up || '').trim()) push(`${ep}.mitigation_items[${mii}].follow_up`, 'Tindak lanjut wajib diisi');
         });
         if (!score(ev.after.likelihood, ev.after.impact)) push(`${ep}.after.likelihood`, 'Risk After Mitigation wajib diisi (1-5)');
       });
@@ -262,7 +264,9 @@ export default function RiskRegisterFormPage() {
         mitigation_items: ev.mitigation_items.map((mi, idx) => ({
           id: mi.id,
           description: mi.description,
-          follow_up: mi.follow_up,
+          instruction: mi.instruction || null,
+          realization: mi.realization || null,
+          mr_note: mi.mr_note || '',
           order: idx + 1,
           documents: mi.documents || [],
           follow_up_status: mi.follow_up_status || null,
@@ -273,7 +277,7 @@ export default function RiskRegisterFormPage() {
     })),
   });
 
-  const save = async (thenSubmit = false) => {
+  const save = async () => {
     const localErrors = validate();
     setErrors(localErrors);
     if (localErrors.length) {
@@ -298,13 +302,11 @@ export default function RiskRegisterFormPage() {
       if (isEdit) {
         const res = await api.put(`/risk-registers/${id}`, body);
         savedId = res.data.data.id;
-        if (thenSubmit) await api.post(`/risk-registers/${savedId}/submit`);
       } else {
         const res = await api.post('/risk-registers', body);
         savedId = res.data.data.id;
-        if (thenSubmit) await api.post(`/risk-registers/${savedId}/submit`);
       }
-      toast.success(thenSubmit ? 'Risk Register disubmit ke Risk Owner' : 'Draft tersimpan');
+      toast.success('Draft tersimpan');
       navigate(`/risk-registers/${savedId}`);
       return savedId;
     } catch (err) {
@@ -319,11 +321,6 @@ export default function RiskRegisterFormPage() {
     } finally {
       setSaving(false);
     }
-  };
-
-  const onDoSubmit = async () => {
-    setConfirmSubmit(false);
-    await save(true);
   };
 
   const lOptions = likelihoods.length ? likelihoods : [{ score: 1, name: 'Jarang' }, { score: 2, name: 'Kecil' }, { score: 3, name: 'Sedang' }, { score: 4, name: 'Besar' }, { score: 5, name: 'Hampir Pasti' }];
@@ -344,11 +341,8 @@ export default function RiskRegisterFormPage() {
             <button className="btn-secondary" onClick={() => navigate('/risk-registers')} disabled={saving}>
               Batal
             </button>
-            <button className="btn-secondary" onClick={() => save(false)} disabled={saving}>
+            <button className="btn-secondary" onClick={() => save()} disabled={saving}>
               {saving ? 'Menyimpan...' : 'Simpan Draft'}
-            </button>
-            <button className="btn-primary" onClick={() => setConfirmSubmit(true)} disabled={saving}>
-              Simpan & Submit
             </button>
           </>
         }
@@ -360,7 +354,7 @@ export default function RiskRegisterFormPage() {
             Rejected By: {header.status === 'REJECTED_BY_OWNER' ? 'Risk Owner' : 'MR'}
           </p>
           <p className="mt-1">
-            Perbaiki bagian Risk Treatment lalu Submit ulang. Versi mitigasi lama tetap tersimpan sebagai history.
+            Perbaiki bagian Risk Treatment lalu simpan draft. Submit dilakukan dari daftar Risk Register. Versi mitigasi lama tetap tersimpan sebagai history.
           </p>
         </div>
       )}
@@ -458,7 +452,11 @@ export default function RiskRegisterFormPage() {
             <div key={cat.key} className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
               <div className="mb-3 flex items-end justify-between gap-3">
                 <div className="flex-1">
-                  <Field label={`Risk Category ${ci + 1}`} required error={errFor(`categories[${ci}].category_id`)}>
+                  <Field
+                    label={categories.find((c) => String(c.id) === String(cat.category_id))?.name || 'Pilih Risk Category'}
+                    required
+                    error={errFor(`categories[${ci}].category_id`)}
+                  >
                     <select
                       className="input"
                       value={cat.category_id}
@@ -485,7 +483,7 @@ export default function RiskRegisterFormPage() {
                   <div className="flex items-end justify-between gap-3">
                     <div className="flex-1">
                       <Field
-                        label={`Risk Event ${ci + 1}.${ei + 1}`}
+                        label={`${categories.find((c) => String(c.id) === String(cat.category_id))?.name || 'Kategori'} / Risk Event ${ei + 1}`}
                         required
                         error={errFor(`categories[${ci}].events[${ei}].name`)}
                       >
@@ -591,8 +589,6 @@ export default function RiskRegisterFormPage() {
                       lOptions={lOptions}
                       iOptions={iOptions}
                       levelOf={levelOf}
-                      registerId={id}
-                      toast={toast}
                     />
                   )}
                 </div>
@@ -602,11 +598,11 @@ export default function RiskRegisterFormPage() {
         </div>
       ))}
 
-      {/* 09 Review & Submit */}
+      {/* 09 Review & Simpan Draft */}
       <div id="section-review">
         <CollapsibleSection
           no="09"
-          title="Review & Submit"
+          title="Review & Simpan Draft"
           open={openMap.review}
           onToggle={() => setOpenMap((m) => ({ ...m, review: !m.review }))}
         >
@@ -622,33 +618,20 @@ export default function RiskRegisterFormPage() {
             </div>
             <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
               <p className="font-semibold text-slate-700">Alur approval:</p>
-              <p className="mt-1 text-slate-600">Risk Officer → Submit → Risk Owner → MR → APPROVED</p>
+              <p className="mt-1 text-slate-600">Risk Officer → Simpan Draft → Submit dari daftar → Risk Owner → MR → APPROVED</p>
               <p className="mt-2 text-xs text-slate-500">
-                Submit memerlukan seluruh field wajib terisi. Anda tetap dapat menyimpan dulu sebagai Draft.
+                Simpan Draft memerlukan seluruh field wajib terisi. Setelah draft tersimpan, lakukan Submit dari daftar Risk Register.
               </p>
             </div>
           </div>
 
           <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
-            <button className="btn-secondary" onClick={() => save(false)} disabled={saving}>
-              Simpan Draft
-            </button>
-            <button className="btn-primary" onClick={() => setConfirmSubmit(true)} disabled={saving}>
-              {saving ? 'Menyimpan...' : isEdit ? 'Simpan & Submit Ulang' : 'Simpan & Submit'}
+            <button className="btn-secondary" onClick={() => save()} disabled={saving}>
+              {saving ? 'Menyimpan...' : 'Simpan Draft'}
             </button>
           </div>
         </CollapsibleSection>
       </div>
-
-      <ConfirmDialog
-        open={confirmSubmit}
-        onClose={() => setConfirmSubmit(false)}
-        onConfirm={onDoSubmit}
-        loading={saving}
-        title="Submit Risk Register"
-        message="Submit Risk Register ke Risk Owner untuk approval?"
-        confirmLabel="Ya, Submit"
-      />
     </div>
   );
 }
@@ -731,65 +714,9 @@ function CauseFields({ ci, ei, si, cs, mutate, errFor, sources, showRemove }) {
 /* ---------------------------------------------------------------
    Assessment per event (Inherent / Control / Residual / Treatment / After)
 --------------------------------------------------------------- */
-function EventAssessmentFields({ sec, ci, ei, ev, mutate, errFor, lOptions, iOptions, levelOf, registerId, toast }) {
+function EventAssessmentFields({ sec, ci, ei, ev, mutate, errFor, lOptions, iOptions, levelOf }) {
   const ep = `categories[${ci}].events[${ei}]`;
   const set = (fn) => mutate((f) => fn(f.categories[ci].events[ei]));
-  const [uploadingItem, setUploadingItem] = useState(null);
-
-  const parseMits = (raw) => {
-    if (typeof raw === 'string') {
-      try {
-        return JSON.parse(raw);
-      } catch {
-        return [];
-      }
-    }
-    return Array.isArray(raw) ? raw : [];
-  };
-
-  const syncDocuments = (res, mii) => {
-    const items = (res.data.data?.categories || [])
-      .flatMap((c) => c.events || [])
-      .flatMap((e) => parseMits(e.mitigation_items));
-    const mi = ev.mitigation_items[mii];
-    const fresh = items.find((x) => x.id === mi?.id);
-    mutate((f) => {
-      f.categories[ci].events[ei].mitigation_items[mii].documents = fresh?.documents || [];
-    });
-  };
-
-  const uploadDocument = async (mii, fileList) => {
-    if (!fileList || !fileList.length) return;
-    const mi = ev.mitigation_items[mii];
-    if (!registerId || !mi?.id) {
-      toast?.error('Simpan draft terlebih dahulu sebelum mengunggah bukti dokumen');
-      return;
-    }
-    const body = new FormData();
-    Array.from(fileList).forEach((f) => body.append('files', f));
-    setUploadingItem(mi.id);
-    try {
-      const res = await api.post(`/risk-registers/${registerId}/mitigation-items/${mi.id}/documents`, body);
-      syncDocuments(res, mii);
-      toast?.success('Bukti dokumen berhasil diunggah');
-    } catch (err) {
-      toast?.error(parseError(err).message);
-    } finally {
-      setUploadingItem(null);
-    }
-  };
-
-  const removeDocument = async (mii, docId) => {
-    const mi = ev.mitigation_items[mii];
-    if (!registerId || !mi?.id) return;
-    try {
-      const res = await api.delete(`/risk-registers/${registerId}/mitigation-items/${mi.id}/documents/${docId}`);
-      syncDocuments(res, mii);
-      toast?.success('Dokumen dihapus');
-    } catch (err) {
-      toast?.error(parseError(err).message);
-    }
-  };
 
   if (sec === 'control') {
     return (
@@ -848,53 +775,12 @@ function EventAssessmentFields({ sec, ci, ei, ev, mutate, errFor, lOptions, iOpt
               </button>
             </div>
             <div className="mt-2 pl-8">
-              <label className="label">Tindak Lanjut</label>
-              <textarea
-                className="input min-h-[40px]"
-                placeholder={`Tindak lanjut mitigasi ${mii + 1}`}
-                value={mi.follow_up}
-                onChange={(e) => set((x) => { x.mitigation_items[mii].follow_up = e.target.value; })}
-              />
               {errFor(`${ep}.mitigation_items[${mii}].description`) && (
                 <p className="mt-1 text-xs font-semibold text-jxb-red">{errFor(`${ep}.mitigation_items[${mii}].description`)}</p>
               )}
-              {errFor(`${ep}.mitigation_items[${mii}].follow_up`) && (
-                <p className="mt-1 text-xs font-semibold text-jxb-red">{errFor(`${ep}.mitigation_items[${mii}].follow_up`)}</p>
-              )}
-              <label className="label mt-2">Bukti Dokumen (opsional)</label>
-              <input
-                type="file"
-                multiple
-                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.webp,.bmp"
-                className="input"
-                disabled={!registerId || uploadingItem === mi.id}
-                onChange={(e) => {
-                  uploadDocument(mii, e.target.files);
-                  e.target.value = '';
-                }}
-              />
-              {!registerId && (
-                <p className="mt-1 text-xs text-slate-400">Simpan draft terlebih dahulu untuk mengunggah bukti.</p>
-              )}
-              {(mi.documents || []).map((d) => (
-                <div key={d.id} className="mt-1 flex items-center justify-between gap-2 text-xs">
-                  <button
-                    type="button"
-                    className="truncate text-primary-700 hover:underline"
-                    onClick={() => downloadDocument(registerId, d.id, d.original_name)}
-                  >
-                    {d.original_name}
-                  </button>
-                  <button
-                    type="button"
-                    className="shrink-0 font-semibold text-jxb-red hover:underline"
-                    onClick={() => removeDocument(mii, d.id)}
-                  >
-                    Hapus
-                  </button>
-                </div>
-              ))}
-              {uploadingItem === mi.id && <p className="mt-1 text-xs text-slate-500">Mengunggah...</p>}
+              <p className="mt-1 text-[11px] text-slate-400">
+                Instruksi dan bukti tindak lanjut diisi oleh MR dan Officer setelah register dikirim, melalui menu Tindak Lanjut.
+              </p>
             </div>
           </div>
         ))}

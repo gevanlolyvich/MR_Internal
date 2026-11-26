@@ -50,6 +50,46 @@ const LEVELS = [
 ];
 const levelOf = (s) => (LEVELS.find((l) => s >= l.min && s <= l.max) || {}).level || '-';
 
+const nowIso = () => new Date().toISOString();
+const makeInstruction = (text) => ({
+  text,
+  note: 'Mohon dilengkapi bukti pendukung.',
+  by: MR,
+  at: nowIso(),
+});
+const makeRealization = (note) => ({ note, by: OFFICER, at: nowIso() });
+const makeDocument = (seq, index) => ({
+  id: crypto.randomUUID(),
+  original_name: `bukti-${seq}-${index + 1}.pdf`,
+  storage_name: `bukti-${seq}-${index + 1}.pdf`,
+  mime_type: 'application/pdf',
+  size: rnd(120000, 900000),
+  uploaded_at: nowIso(),
+  uploaded_by: OFFICER,
+});
+const snapshotHistory = (meta, item) => ({
+  archived_at: nowIso(),
+  ...meta,
+  instruction: item.instruction ? { ...item.instruction } : null,
+  follow_up: item.follow_up || null,
+  realization: item.realization ? { ...item.realization } : null,
+  mr_note: item.mr_note || null,
+  follow_up_status: item.follow_up_status || null,
+  documents: (item.documents || []).map((d) => ({ ...d })),
+});
+
+const HISTORY_ACTOR = {
+  SUBMIT: [OFFICER, 'RISK_OFFICER'],
+  APPROVE_OWNER: [OWNER, 'RISK_OWNER'],
+  REJECT_OWNER: [OWNER, 'RISK_OWNER'],
+  MR_INSTRUCTION: [MR, 'MR'],
+  OFFICER_REALIZATION: [OFFICER, 'RISK_OFFICER'],
+  APPROVE_MR: [MR, 'MR'],
+  MR_FINAL_RETURN: [MR, 'MR'],
+  REJECT_MR: [MR, 'MR'],
+  ARCHIVE: [MR, 'MR'],
+};
+
 const buildPair = () => {
   const L = rnd(2, 5);
   const I = rnd(2, 5);
@@ -67,17 +107,33 @@ const buildPair = () => {
     await c.query('DELETE FROM risk_code_counters');
 
     const statuses = [
-      'DRAFT', 'DRAFT', 'DRAFT', 'DRAFT',
-      'WAITING_OWNER_APPROVAL', 'WAITING_OWNER_APPROVAL',
-      'WAITING_MR_APPROVAL', 'WAITING_MR_APPROVAL',
-      'APPROVED', 'APPROVED',
-      'REJECTED_BY_OWNER', 'ARCHIVED',
+      { name: 'DRAFT' },
+      { name: 'WAITING_OWNER_APPROVAL' },
+      { name: 'WAITING_OWNER_APPROVAL' },
+      { name: 'WAITING_MR_INSTRUCTION' },
+      { name: 'WAITING_MR_INSTRUCTION' },
+      { name: 'WAITING_OFFICER_FOLLOWUP' },
+      { name: 'WAITING_OFFICER_FOLLOWUP', returned: true },
+      { name: 'WAITING_MR_APPROVAL' },
+      { name: 'WAITING_MR_APPROVAL' },
+      { name: 'APPROVED' },
+      { name: 'REJECTED_BY_OWNER' },
+      { name: 'ARCHIVED' },
     ];
     let seq = 0;
-    for (const status of statuses) {
+    for (const demo of statuses) {
       seq++;
-      const hasMrReview = ['WAITING_MR_APPROVAL', 'APPROVED', 'ARCHIVED', 'REJECTED_BY_MR'].includes(status);
-      const wasRejected = ['REJECTED_BY_OWNER', 'REJECTED_BY_MR'].includes(status);
+      const status = demo.name;
+      const returned = Boolean(demo.returned);
+      const returnFlow = returned || status === 'REJECTED_BY_MR';
+      const isDraft = status === 'DRAFT';
+      const hasOwnerApproval = !['DRAFT', 'WAITING_OWNER_APPROVAL', 'REJECTED_BY_OWNER'].includes(status);
+      const hasInstruction = ['WAITING_OFFICER_FOLLOWUP', 'WAITING_MR_APPROVAL', 'APPROVED', 'ARCHIVED', 'REJECTED_BY_MR'].includes(status);
+      const everRealized = ['WAITING_MR_APPROVAL', 'APPROVED', 'ARCHIVED', 'REJECTED_BY_MR'].includes(status) || returned;
+      const hasRealization = everRealized && !returnFlow;
+      const hasDocuments = ['WAITING_OFFICER_FOLLOWUP', 'WAITING_MR_APPROVAL', 'APPROVED'].includes(status);
+      const hasFinalAssessment = ['APPROVED', 'ARCHIVED', 'REJECTED_BY_MR'].includes(status) || returned;
+      const mrReturnReason = 'Bukti belum menjelaskan hasil tindak lanjut.';
       const chosenCats = shuffle(CATEGORIES).slice(0, rnd(1, 2));
       const tree = chosenCats.map((cat) => {
         const events = shuffle(cat.events).slice(0, rnd(1, 2)).map((evName) => {
@@ -92,26 +148,85 @@ const buildPair = () => {
             rp_amount: pick(RPS),
             work_unit: pick(WORK_UNITS),
           }));
-          const mitigation_items = shuffle(MITIGATIONS).slice(0, rnd(2, 4)).map((d, i) => ({
-            id: crypto.randomUUID(),
-            description: d,
-            follow_up: pick(FOLLOW_UPS),
-            order: i + 1,
-            documents: [],
-            follow_up_status: hasMrReview ? pick(['BELUM_MEMADAI', 'TIDAK_DAPAT_DITINDAKLANJUTI', 'SELESAI']) : null,
-            follow_up_history: wasRejected
-              ? [{
-                  archived_at: new Date().toISOString(),
-                  archived_by: status === 'REJECTED_BY_MR' ? MR : OWNER,
-                  actor_role: status === 'REJECTED_BY_MR' ? 'MR' : 'RISK_OWNER',
-                  action: status === 'REJECTED_BY_MR' ? 'REJECT_MR' : 'REJECT_OWNER',
-                  reason: 'Mitigasi perlu diperbaiki dan dilengkapi dokumen pendukung.',
-                  follow_up: pick(FOLLOW_UPS),
-                  follow_up_status: 'BELUM_MEMADAI',
-                  documents: [],
-                }]
-              : [],
-          }));
+          const mitigation_items = shuffle(MITIGATIONS).slice(0, rnd(2, 4)).map((d, i) => {
+            const instructionText = hasInstruction ? pick(FOLLOW_UPS) : '';
+            const instruction = hasInstruction ? makeInstruction(instructionText) : null;
+            const realization = hasRealization
+              ? makeRealization('Realisasi telah dilaksanakan dan didokumentasikan.')
+              : null;
+            const documents = hasDocuments && !returnFlow ? [makeDocument(seq, i)] : [];
+            const priorRealization = returnFlow
+              ? makeRealization('Realisasi sebelumnya belum menjelaskan hasil tindak lanjut.')
+              : realization;
+            const priorDocuments = returnFlow
+              ? (hasDocuments ? [makeDocument(seq, i)] : [])
+              : documents;
+            const assessmentStatus = hasFinalAssessment
+              ? (returnFlow ? (i % 2 === 0 ? 'BELUM_MEMADAI' : 'TIDAK_DAPAT_DITINDAKLANJUTI') : 'SELESAI')
+              : null;
+            const mrNote = hasFinalAssessment
+              ? (returnFlow ? mrReturnReason : 'Penilaian MR: realisasi sesuai instruksi.')
+              : null;
+            const item = {
+              id: crypto.randomUUID(),
+              description: d,
+              follow_up: instructionText || '',
+              instruction,
+              realization,
+              order: i + 1,
+              documents,
+              follow_up_status: assessmentStatus,
+              mr_note: mrNote,
+              follow_up_history: [],
+            };
+
+            if (hasInstruction) {
+              item.follow_up_history.push(snapshotHistory({
+                archived_by: MR,
+                actor_role: 'MR',
+                action: 'MR_INSTRUCTION',
+                reason: instruction.note,
+              }, {
+                follow_up: instructionText,
+                instruction,
+                realization: null,
+                follow_up_status: null,
+                mr_note: null,
+                documents: [],
+              }));
+            }
+            if (everRealized) {
+              item.follow_up_history.push(snapshotHistory({
+                archived_by: OFFICER,
+                actor_role: 'RISK_OFFICER',
+                action: 'OFFICER_REALIZATION',
+                reason: priorRealization.note,
+              }, {
+                follow_up: instructionText,
+                instruction,
+                realization: priorRealization,
+                follow_up_status: null,
+                mr_note: null,
+                documents: priorDocuments,
+              }));
+            }
+            if (hasFinalAssessment) {
+              item.follow_up_history.push(snapshotHistory({
+                archived_by: MR,
+                actor_role: 'MR',
+                action: returnFlow ? 'MR_FINAL_RETURN' : 'MR_FINAL',
+                reason: mrNote,
+              }, {
+                follow_up: instructionText,
+                instruction,
+                realization: priorRealization,
+                follow_up_status: assessmentStatus,
+                mr_note: mrNote,
+                documents: priorDocuments,
+              }));
+            }
+            return item;
+          });
           return {
             name: evName,
             causes,
@@ -127,7 +242,7 @@ const buildPair = () => {
 
       const objective = pick(OBJECTIVES);
       const risk_code = `RISK-${YEAR}-${String(seq).padStart(4, '0')}`;
-      const submittedAt = status === 'DRAFT' ? null : new Date();
+      const submittedAt = isDraft ? null : new Date();
       const approvedAt = ['APPROVED', 'ARCHIVED'].includes(status) ? new Date() : null;
       const version = ['APPROVED', 'ARCHIVED'].includes(status) ? 2 : 1;
 
@@ -159,10 +274,19 @@ const buildPair = () => {
       }
 
       const histories = [];
-      if (status !== 'DRAFT') histories.push(['SUBMIT', OFFICER, 'RISK_OFFICER', 'DRAFT', 'WAITING_OWNER_APPROVAL', null]);
-      if (['WAITING_MR_APPROVAL', 'APPROVED', 'ARCHIVED'].includes(status)) histories.push(['APPROVE_OWNER', OWNER, 'RISK_OWNER', 'WAITING_OWNER_APPROVAL', 'WAITING_MR_APPROVAL', null]);
-      if (['APPROVED', 'ARCHIVED'].includes(status)) histories.push(['APPROVE_MR', MR, 'MR', 'WAITING_MR_APPROVAL', 'APPROVED', null]);
-      if (status === 'REJECTED_BY_OWNER') histories.push(['REJECT_OWNER', OWNER, 'RISK_OWNER', 'WAITING_OWNER_APPROVAL', 'REJECTED_BY_OWNER', 'Mitigasi belum menjelaskan tindakan preventif secara detail.']);
+      const pushHistory = (action, fromStatus, toStatus, reason = null) => {
+        const [actorId, actorRole] = HISTORY_ACTOR[action];
+        histories.push([action, actorId, actorRole, fromStatus, toStatus, reason]);
+      };
+      if (!isDraft) pushHistory('SUBMIT', 'DRAFT', 'WAITING_OWNER_APPROVAL');
+      if (status === 'REJECTED_BY_OWNER') pushHistory('REJECT_OWNER', 'WAITING_OWNER_APPROVAL', status, 'Register perlu diperbaiki sebelum instruksi MR.');
+      if (hasOwnerApproval) pushHistory('APPROVE_OWNER', 'WAITING_OWNER_APPROVAL', 'WAITING_MR_INSTRUCTION');
+      if (hasInstruction) pushHistory('MR_INSTRUCTION', 'WAITING_MR_INSTRUCTION', 'WAITING_OFFICER_FOLLOWUP');
+      if (everRealized) pushHistory('OFFICER_REALIZATION', 'WAITING_OFFICER_FOLLOWUP', 'WAITING_MR_APPROVAL');
+      if (returned) pushHistory('MR_FINAL_RETURN', 'WAITING_MR_APPROVAL', 'WAITING_OFFICER_FOLLOWUP', mrReturnReason);
+      if (['APPROVED', 'ARCHIVED'].includes(status)) pushHistory('APPROVE_MR', 'WAITING_MR_APPROVAL', 'APPROVED');
+      if (status === 'REJECTED_BY_MR') pushHistory('REJECT_MR', 'WAITING_MR_APPROVAL', status, mrReturnReason);
+      if (status === 'ARCHIVED') pushHistory('ARCHIVE', 'APPROVED', 'ARCHIVED');
       for (const h of histories) {
         await c.query(
           'INSERT INTO approval_histories (risk_register_id, action, actor_id, actor_role, from_status, to_status, reason) VALUES (?,?,?,?,?,?,?)',
@@ -170,7 +294,21 @@ const buildPair = () => {
         );
       }
 
-      if (status !== 'DRAFT') {
+      if (!isDraft) {
+        const mitigationAction = {
+          WAITING_OWNER_APPROVAL: 'SUBMIT',
+          REJECTED_BY_OWNER: 'SUBMIT',
+          WAITING_MR_INSTRUCTION: 'APPROVE_OWNER',
+          WAITING_OFFICER_FOLLOWUP: 'MR_INSTRUCTION',
+          WAITING_MR_APPROVAL: 'OFFICER_REALIZATION',
+          APPROVED: 'MR_FINAL',
+          ARCHIVED: 'MR_FINAL',
+          REJECTED_BY_MR: 'MR_FINAL_RETURN',
+        }[status];
+        const currentAction = returned ? 'MR_FINAL_RETURN' : mitigationAction;
+        const rejectionReason = status === 'REJECTED_BY_OWNER'
+          ? 'Dikembalikan Owner sebelum instruksi MR'
+          : returnFlow ? mrReturnReason : null;
         const snapshot = {
           objective,
           risk_code,
@@ -188,7 +326,7 @@ const buildPair = () => {
         };
         await c.query(
           'INSERT INTO risk_mitigation_histories (risk_register_id, version, snapshot, action, approval_status, rejection_reason, created_by) VALUES (?,?,?,?,?,?,?)',
-          [regId, version, JSON.stringify(snapshot), 'SUBMIT', status, status === 'REJECTED_BY_OWNER' ? 'Mitigasi belum detail' : null, OFFICER]
+          [regId, version, JSON.stringify(snapshot), currentAction, status, rejectionReason, OFFICER]
         );
       }
       console.log(`seeded ${risk_code} [${status}]`);

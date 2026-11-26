@@ -21,7 +21,9 @@ Jalankan **secara manual dan berurutan** (phpMyAdmin → Import, atau mysql clie
 | 4 | `migrations/004_workflow.sql` | approval_histories, risk_mitigation_histories, FK notifications → risk_registers |
 | 5 | `migrations/005_risk_register_event_level.sql` | Assessment (Inherent/Control/Residual/Treatment/After) pindah ke level **Risk Event**; Severity dihapus dari Risk Cause |
 | 6 | `migrations/006_cause_work_unit.sql` | Kolom `work_unit` (Unit Kerja / Unit Usaha) pada Risk Cause; Tindak Lanjut per item mitigasi (JSON) |
-| 7 | `seeds/001_seed.sql` | branch, kategori risiko, treatment, likelihood, impact, risk level, source, severity, tolerance, 3 user contoh |
+| 7 | `migrations/007_followup_workflow.sql` | Status baru `WAITING_MR_INSTRUCTION`, `WAITING_OFFICER_FOLLOWUP` dan aksi history instruksi/realisasi/penilaian MR (termasuk `MR_FINAL`, `MR_FINAL_RETURN`) |
+| 8 | `migrations/008_mr_final_assessment.sql` | Menambahkan aksi `MR_FINAL` / `MR_FINAL_RETURN` pada tabel history untuk database yang sudah menjalankan 007 |
+| 9 | `seeds/001_seed.sql` | branch, kategori risiko, treatment, likelihood, impact, risk level, source, severity, tolerance, 3 user contoh |
 
 ### via phpMyAdmin
 
@@ -40,6 +42,8 @@ C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\003_risk_register
 C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\004_workflow.sql
 C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\005_risk_register_event_level.sql
 C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\006_cause_work_unit.sql
+C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\007_followup_workflow.sql
+C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\migrations\008_mr_final_assessment.sql
 C:\xampp\mysql\bin\mysql -u root -p jxb_mr < server\seeds\001_seed.sql
 ```
 
@@ -61,6 +65,30 @@ register dengan struktur event-level (inherent/control/residual/treatment/after
 per event, severity_description + rp_amount + work_unit per cause, dan status
 tindak lanjut per item mitigasi).
 
+### Alur tindak lanjut
+
+Status dan aksi history berjalan berurutan sebagai berikut:
+
+1. Officer mengisi register (`DRAFT`) lalu submit → `WAITING_OWNER_APPROVAL` (`SUBMIT`).
+2. Risk Owner menyetujui → `WAITING_MR_INSTRUCTION` (`APPROVE_OWNER`).
+   Jika Owner mengembalikan → `REJECTED_BY_OWNER` (`REJECT_OWNER`), officer dapat mengedit lalu submit ulang.
+3. MR memberi instruksi per item mitigasi → `WAITING_OFFICER_FOLLOWUP` (`MR_INSTRUCTION`).
+   Keterangan MR wajib pada tahap instruksi.
+4. Officer mengisi realisasi per item → `WAITING_MR_APPROVAL` (`OFFICER_REALIZATION`).
+   Keterangan realisasi wajib; bukti dokumen diunggah pada tahap ini.
+5. MR menilai setiap item pada `WAITING_MR_APPROVAL`:
+   - `SELESAI` → tampil sebagai **Sesuai / Selesai**.
+   - `BELUM_MEMADAI` → tampil sebagai **Belum Sesuai**.
+   - `TIDAK_DAPAT_DITINDAKLANJUTI` → tampil sebagai **Belum Ditindaklanjuti**.
+
+   Jika **semua** item `SELESAI` → `APPROVED` (`APPROVE_MR`; history item `MR_FINAL`).
+   Jika **ada** item `BELUM_MEMADAI` atau `TIDAK_DAPAT_DITINDAKLANJUTI` →
+   kembali ke `WAITING_OFFICER_FOLLOWUP` (`MR_FINAL_RETURN`). Realisasi dan
+   dokumen lama diarsipkan ke `follow_up_history` sebelum officer mengisi ulang.
+
+Status lama `REJECTED_BY_MR` tetap dikenali untuk data lama/tampilan, tetapi
+bukan bagian dari set demo aktif. Nilai enum lama tidak dihapus.
+
 ### Bukti dokumen tindak lanjut
 
 Fitur upload tidak memerlukan migrasi SQL. Jalankan once:
@@ -69,6 +97,12 @@ Fitur upload tidak memerlukan migrasi SQL. Jalankan once:
 cd server
 npm install
 ```
+
+**Upload bukti hanya tersedia pada status `WAITING_OFFICER_FOLLOWUP`**
+(setelah instruksi MR, saat officer menyiapkan realisasi). Tidak tersedia
+field/endpoint upload pada `DRAFT` maupun form awal; server menolak upload
+pada status lain. Bukti tetap melekat pada item saat status berubah ke
+`WAITING_MR_APPROVAL` / `APPROVED`, dan ikut terarsip saat `MR_FINAL_RETURN`.
 
 File disimpan di `server/uploads/risk-registers/<registerId>/` (diabaikan git)
 dan hanya dapat diunduh melalui endpoint terautentikasi

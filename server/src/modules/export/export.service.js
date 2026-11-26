@@ -2,6 +2,7 @@ const ExcelJS = require('exceljs');
 const { query } = require('../../db/pool');
 const repo = require('../risk-registers/riskRegister.repository');
 const { getLevelByScore } = require('../../utils/riskLevel');
+const { STATUS_LABEL, FOLLOW_UP_STATUS_LABEL } = require('../../config/status');
 const ApiError = require('../../utils/ApiError');
 
 const LEVEL_COLORS = {
@@ -50,9 +51,12 @@ const COLUMNS = [
   { group: 'residual', title: 'Residual Risk Level', width: 16, key: 'res_level' },
 
   { group: 'treatment', title: 'Risk Treatment', width: 20, key: 'treatment' },
-  { group: 'treatment', title: 'Tindak Lanjut', width: 45, key: 'follow_up' },
-  { group: 'treatment', title: 'Status Tindak Lanjut', width: 26, key: 'follow_up_status' },
+  { group: 'treatment', title: 'Instruksi MR', width: 40, key: 'instruction' },
+  { group: 'treatment', title: 'Keterangan MR (Instruksi)', width: 32, key: 'instruction_note' },
+  { group: 'treatment', title: 'Realisasi Officer', width: 40, key: 'realization' },
   { group: 'treatment', title: 'Bukti Dokumen', width: 34, key: 'documents' },
+  { group: 'treatment', title: 'Status Penilaian', width: 26, key: 'follow_up_status' },
+  { group: 'treatment', title: 'Keterangan MR (Akhir)', width: 32, key: 'mr_note' },
 
   { group: 'after', title: 'After Mitigation Likelihood', width: 14, key: 'aft_l' },
   { group: 'after', title: 'After Mitigation Impact', width: 14, key: 'aft_i' },
@@ -73,22 +77,6 @@ const GROUP_LABEL = {
   treatment: 'RISK TREATMENT',
   after: 'RISK AFTER MITIGATION',
   pic: 'PIC & STATUS',
-};
-
-const STATUS_LABEL = {
-  DRAFT: 'Draft',
-  WAITING_OWNER_APPROVAL: 'Waiting Owner Approval',
-  REJECTED_BY_OWNER: 'Rejected by Owner',
-  WAITING_MR_APPROVAL: 'Waiting MR Approval',
-  REJECTED_BY_MR: 'Rejected by MR',
-  APPROVED: 'Approved',
-  ARCHIVED: 'Archived',
-};
-
-const FOLLOW_UP_STATUS_LABEL = {
-  BELUM_MEMADAI: 'Belum Memadai',
-  TIDAK_DAPAT_DITINDAKLANJUTI: 'Tidak Dapat Ditindaklanjuti',
-  SELESAI: 'Selesai',
 };
 
 const buildWhere = (filters) => {
@@ -169,10 +157,28 @@ const flattenRows = async (registers, levels) => {
           res_i: ev.residual_impact,
           res_level: levelOf(ev.residual_score),
           treatment: mitItems.length ? mitItems.map((m) => (typeof m === 'string' ? m : m.description)).join(' | ') : '-',
-          follow_up: mitItems.length
+          instruction: mitItems.length
             ? (mitItems
-                .map((m) => (typeof m === 'string' ? '' : (m.follow_up || '')))
+                .map((m) => (typeof m === 'string' ? '' : (m.instruction?.text || m.follow_up || '')))
                 .filter(Boolean)
+                .join(' | ') || '-')
+            : '-',
+          instruction_note: mitItems.length
+            ? (mitItems
+                .map((m) => (typeof m === 'string' ? '' : (m.instruction?.note || '')))
+                .filter(Boolean)
+                .join(' | ') || '-')
+            : '-',
+          realization: mitItems.length
+            ? (mitItems
+                .map((m) => (typeof m === 'string' ? '' : (m.realization?.note || '')))
+                .filter(Boolean)
+                .join(' | ') || '-')
+            : '-',
+          documents: mitItems.length
+            ? (mitItems
+                .flatMap((m) => (typeof m === 'string' ? [] : m.documents || []))
+                .map((d) => d.original_name)
                 .join(' | ') || '-')
             : '-',
           follow_up_status: mitItems.length
@@ -181,10 +187,10 @@ const flattenRows = async (registers, levels) => {
                 .filter(Boolean)
                 .join(' | ') || '-')
             : '-',
-          documents: mitItems.length
+          mr_note: mitItems.length
             ? (mitItems
-                .flatMap((m) => (typeof m === 'string' ? [] : m.documents || []))
-                .map((d) => d.original_name)
+                .map((m) => (typeof m === 'string' ? '' : (m.mr_note || '')))
+                .filter(Boolean)
                 .join(' | ') || '-')
             : '-',
           aft_l: ev.after_likelihood,

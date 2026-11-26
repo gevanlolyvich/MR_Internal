@@ -6,6 +6,8 @@ import DashboardPage from './pages/Dashboard/DashboardPage';
 import RiskRegisterListPage from './pages/RiskRegister/RiskRegisterListPage';
 import RiskRegisterFormPage from './pages/RiskRegister/RiskRegisterFormPage';
 import RiskRegisterDetailPage from './pages/RiskRegister/RiskRegisterDetailPage';
+import FollowUpListPage from './pages/FollowUp/FollowUpListPage';
+import FollowUpDetailPage from './pages/FollowUp/FollowUpDetailPage';
 import ApprovalListPage from './pages/Approval/ApprovalListPage';
 import UserManagementPage from './pages/UserManagement/UserManagementPage';
 import BranchManagementPage from './pages/BranchManagement/BranchManagementPage';
@@ -70,6 +72,22 @@ export default function App() {
           element={
             <RequireAuth perm="risk-register:edit">
               <RiskRegisterFormPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/follow-ups"
+          element={
+            <RequireAuth perm={null}>
+              <FollowUpListPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/follow-ups/:id"
+          element={
+            <RequireAuth perm={null}>
+              <FollowUpDetailPage />
             </RequireAuth>
           }
         />

@@ -2,7 +2,7 @@ const repo = require('../risk-registers/riskRegister.repository');
 const rrService = require('../risk-registers/riskRegister.service');
 const ApiError = require('../../utils/ApiError');
 const { withTransaction } = require('../../db/pool');
-const { STATUS } = require('../../config/status');
+const { STATUS, MR_PENDING } = require('../../config/status');
 const { audit } = require('../../middlewares/audit');
 const { notify } = require('../../utils/notify');
 const { query } = require('../../db/pool');
@@ -10,8 +10,7 @@ const { ROLES } = require('../../config/roles');
 
 /** Antrian approval sesuai role pemanggil */
 const getQueue = async (user, filters, pagination) => {
-  const statusFilter =
-    user.role === ROLES.MR ? STATUS.WAITING_MR_APPROVAL : STATUS.WAITING_OWNER_APPROVAL;
+  const statusFilter = user.role === ROLES.MR ? MR_PENDING : STATUS.WAITING_OWNER_APPROVAL;
   return rrService.getList(
     { ...filters, status: statusFilter },
     { role: user.role, userId: user.id },
@@ -31,7 +30,7 @@ const assertApprovable = (header, user) => {
         current_status: header.status,
       });
     }
-    return { newStatus: STATUS.WAITING_MR_APPROVAL, action: 'APPROVE_OWNER' };
+    return { newStatus: STATUS.WAITING_MR_INSTRUCTION, action: 'APPROVE_OWNER' };
   }
 
   if (user.role === ROLES.MR) {
@@ -88,14 +87,29 @@ const approve = async (id, req) => {
   const header = await repo.findHeader(id);
   if (!header) throw ApiError.notFound('Risk Register tidak ditemukan');
 
-  const { newStatus, action } = assertApprovable(header, user);
-  const isFinal = newStatus === STATUS.APPROVED;
+  let { newStatus, action } = assertApprovable(header, user);
+  const assessments = req.body?.assessments;
+  const mrNotes = assessments ? assessments.map((a) => String(a.note || '').trim()).join(' | ') : null;
 
   if (user.role === ROLES.MR) {
-    await rrService.assertFollowUpStatusesComplete(id);
+    if (assessments) {
+      const errors = rrService.validateFinalAssessments(assessments);
+      if (errors.length) throw ApiError.badRequest('Penilaian akhir MR tidak valid', errors);
+    } else {
+      await rrService.assertFollowUpStatusesComplete(id);
+    }
+    newStatus = await rrService.resolveMrFinalStatus(id, assessments);
+    action = newStatus === STATUS.APPROVED ? 'APPROVE_MR' : 'MR_FINAL_RETURN';
   }
 
+  const isFinal = newStatus === STATUS.APPROVED;
+  const isReturn = newStatus === STATUS.WAITING_OFFICER_FOLLOWUP;
+
   const updated = await withTransaction(async (conn) => {
+    if (user.role === ROLES.MR && assessments) {
+      await rrService.applyFinalAssessments(conn, id, assessments, user.id);
+      await rrService.assertFollowUpStatusesComplete(id, conn);
+    }
     const affected = await repo.updateStatusGuarded(conn, id, header.status, newStatus, {
       ...(isFinal ? { approved_at: new Date() } : {}),
     });
@@ -108,19 +122,19 @@ const approve = async (id, req) => {
       actor_role: user.role,
       from_status: header.status,
       to_status: newStatus,
+      reason: user.role === ROLES.MR ? mrNotes : null,
     });
 
     await updateMitigationRow(conn, id, header.current_version, {
       action,
       approval_status: newStatus,
-      rejection_reason: null,
+      rejection_reason: isReturn ? mrNotes : null,
     });
     return true;
   });
 
   if (!updated) throw ApiError.conflict('Approval sudah diproses oleh permintaan lain. Muat ulang halaman.');
 
-  // Notifikasi
   if (isFinal) {
     await notify({
       userIds: [header.risk_officer_id, header.risk_owner_id],
@@ -128,22 +142,29 @@ const approve = async (id, req) => {
       message: `${header.risk_code} telah disetujui MR dan berstatus aktif.`,
       riskRegisterId: id,
     });
+  } else if (isReturn) {
+    await notify({
+      userIds: [header.risk_officer_id],
+      title: 'Tindak lanjut perlu diperbaiki',
+      message: `${header.risk_code} dikembalikan Officer. Bukti dan catatan sebelumnya tersimpan sebagai history.`,
+      riskRegisterId: id,
+    });
   } else {
     await notify({
       userIds: await activeMrIds(),
-      title: 'Menunggu approval MR',
-      message: `${header.risk_code} telah disetujui Risk Owner dan membutuhkan approval MR.`,
+      title: 'Risk Register disetujui Owner',
+      message: `${header.risk_code} telah disetujui Risk Owner dan membutuhkan instruksi tindak lanjut dari MR.`,
       riskRegisterId: id,
     });
   }
 
   audit({
     req,
-    action: isFinal ? 'APPROVE_MR' : 'APPROVE_OWNER',
+    action,
     entity: 'risk_registers',
     entityId: id,
     oldValue: { status: header.status },
-    newValue: { status: newStatus },
+    newValue: { status: newStatus, reason: user.role === ROLES.MR ? mrNotes : null },
   });
 
   return rrService.getDetail(id, user);
@@ -161,12 +182,22 @@ const reject = async (id, reason, req) => {
   if (!header) throw ApiError.notFound('Risk Register tidak ditemukan');
 
   const { newStatus, action } = assertRejectable(header, user);
+  const assessments = req.body?.assessments;
 
   if (user.role === ROLES.MR) {
-    await rrService.assertFollowUpStatusesComplete(id);
+    if (assessments) {
+      const errors = rrService.validateFinalAssessments(assessments);
+      if (errors.length) throw ApiError.badRequest('Penilaian akhir MR tidak valid', errors);
+    } else {
+      await rrService.assertFollowUpStatusesComplete(id);
+    }
   }
 
   const updated = await withTransaction(async (conn) => {
+    if (user.role === ROLES.MR && assessments) {
+      await rrService.applyFinalAssessments(conn, id, assessments, user.id);
+      await rrService.assertFollowUpStatusesComplete(id, conn);
+    }
     await rrService.archiveFollowUps(conn, id, {
       actorId: user.id,
       actorRole: user.role,
@@ -215,6 +246,72 @@ const reject = async (id, reason, req) => {
   return rrService.getDetail(id, user);
 };
 
+const rejectInstruction = async (id, reason, req) => {
+  const user = req.user;
+  if (!reason || !String(reason).trim()) {
+    throw ApiError.badRequest('Alasan pengembalian wajib diisi', [
+      { field: 'reason', message: 'Alasan pengembalian wajib diisi' },
+    ]);
+  }
+  if (user.role !== ROLES.MR) throw ApiError.forbidden('Hanya MR yang dapat mengembalikan instruksi');
+  const header = await repo.findHeader(id);
+  if (!header) throw ApiError.notFound('Risk Register tidak ditemukan');
+  if (header.status !== STATUS.WAITING_MR_INSTRUCTION) {
+    throw ApiError.conflict('Register tidak menunggu instruksi MR', { current_status: header.status });
+  }
+
+  const text = String(reason).trim();
+  const updated = await withTransaction(async (conn) => {
+    await rrService.archiveFollowUps(conn, id, {
+      actorId: user.id,
+      actorRole: user.role,
+      action: 'REJECT_MR_INSTRUCTION',
+      reason: text,
+    });
+    const affected = await repo.updateStatusGuarded(
+      conn,
+      id,
+      header.status,
+      STATUS.REJECTED_BY_MR,
+      {}
+    );
+    if (!affected) return false;
+    await repo.insertApprovalHistory(conn, {
+      risk_register_id: id,
+      action: 'REJECT_MR_INSTRUCTION',
+      actor_id: user.id,
+      actor_role: user.role,
+      from_status: header.status,
+      to_status: STATUS.REJECTED_BY_MR,
+      reason: text,
+    });
+    await updateMitigationRow(conn, id, header.current_version, {
+      action: 'REJECT_MR_INSTRUCTION',
+      approval_status: STATUS.REJECTED_BY_MR,
+      rejection_reason: text,
+    });
+    return true;
+  });
+
+  if (!updated) throw ApiError.conflict('Status Risk Register sudah berubah. Muat ulang halaman.');
+
+  await notify({
+    userIds: [header.risk_officer_id],
+    title: 'Instruksi MR dikembalikan',
+    message: `${header.risk_code} perlu diperbaiki. Alasan: ${text}`,
+    riskRegisterId: id,
+  });
+  audit({
+    req,
+    action: 'REJECT_MR_INSTRUCTION',
+    entity: 'risk_registers',
+    entityId: id,
+    oldValue: { status: header.status },
+    newValue: { status: STATUS.REJECTED_BY_MR, reason: text },
+  });
+  return rrService.getDetail(id, user);
+};
+
 const setFollowUpStatuses = (id, statuses, req) => rrService.setFollowUpStatuses(id, statuses, req);
 
-module.exports = { getQueue, getDetail, approve, reject, setFollowUpStatuses };
+module.exports = { getQueue, getDetail, approve, reject, rejectInstruction, setFollowUpStatuses };

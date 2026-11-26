@@ -16,7 +16,7 @@ export default function ApprovalListPage() {
   const [page, setPage] = useState(1);
 
   const isMR = user?.role === 'MR';
-  const allowed = can('approval:owner') || can('approval:mr');
+  const allowed = can('approval:owner');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -35,11 +35,21 @@ export default function ApprovalListPage() {
     else setLoading(false);
   }, [load, allowed]);
 
+  if (isMR) {
+    return (
+      <Card className="p-8 text-center">
+        <p className="font-bold text-primary-700">Antrian MR tersedia di menu Tindak Lanjut</p>
+        <p className="mt-1 text-sm text-slate-500">Gunakan menu tersebut untuk memberi instruksi dan menilai bukti tindak lanjut.</p>
+        <button className="btn-primary mt-4" onClick={() => navigate('/follow-ups')}>Buka Tindak Lanjut</button>
+      </Card>
+    );
+  }
+
   if (!allowed) {
     return (
       <Card className="p-8 text-center">
         <p className="font-bold text-jxb-red">Akses ditolak</p>
-        <p className="mt-1 text-sm text-slate-500">Menu Approval hanya untuk Risk Owner dan MR.</p>
+        <p className="mt-1 text-sm text-slate-500">Menu Approval hanya untuk Risk Owner.</p>
       </Card>
     );
   }
@@ -48,11 +58,7 @@ export default function ApprovalListPage() {
     <div>
       <PageHeader
         title="Approval"
-        subtitle={
-          isMR
-            ? 'Risk Register yang telah disetujui Risk Owner dan menunggu approval MR'
-            : 'Risk Register yang menunggu approval Anda sebagai Risk Owner'
-        }
+        subtitle="Risk Register yang menunggu approval Risk Owner sebelum masuk ke tahap tindak lanjut MR."
       />
 
       <Card>
@@ -61,7 +67,7 @@ export default function ApprovalListPage() {
         ) : !data.items.length ? (
           <EmptyState
             title="Tidak ada antrian approval"
-            description={isMR ? 'Belum ada Risk Owner yang menyetujui Risk Register.' : 'Belum ada Risk Register yang disubmit ke Anda.'}
+            description="Belum ada register yang menunggu approval Anda."
           />
         ) : (
           <div className="overflow-x-auto">
@@ -94,17 +100,11 @@ export default function ApprovalListPage() {
                     </td>
                     <td>
                       <div className="flex justify-end gap-1.5">
-                        <button
-                          className="btn-secondary btn-sm"
-                          onClick={() => navigate(`/risk-registers/${r.id}`)}
-                        >
+                        <button className="btn-secondary btn-sm" onClick={() => navigate(`/risk-registers/${r.id}`)}>
                           Lihat Detail
                         </button>
-                        <button
-                          className="btn-primary btn-sm"
-                          onClick={() => navigate(`/risk-registers/${r.id}`)}
-                        >
-                          Proses Approval
+                        <button className="btn-success btn-sm" onClick={() => navigate(`/risk-registers/${r.id}`)}>
+                          Approval Owner
                         </button>
                       </div>
                     </td>

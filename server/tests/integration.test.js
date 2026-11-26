@@ -47,6 +47,83 @@ beforeAll(async () => {
 
 const auth = (t) => ({ Authorization: `Bearer ${t}` });
 
+const mitigationItemIds = async (registerId) => {
+  const res = await api().get(`/api/risk-registers/${registerId}`).set(auth(tokens.officer));
+  return res.body.data.categories
+    .flatMap((c) => c.events || [])
+    .flatMap((e) => {
+      const items = typeof e.mitigation_items === 'string' ? JSON.parse(e.mitigation_items) : e.mitigation_items || [];
+      return items;
+    })
+    .map((m) => m.id)
+    .filter(Boolean);
+};
+
+const completeInstruction = async (registerId) => {
+  const ids = await mitigationItemIds(registerId);
+  const res = await api()
+    .post(`/api/risk-registers/${registerId}/mr-instruction`)
+    .set(auth(tokens.mr))
+    .send({ items: ids.map((itemId) => ({ itemId, text: 'Lakukan tindak lanjut sesuai mitigasi.', note: 'Mohon bukti pendukung.' })) });
+  expect(res.status).toBe(200);
+  return ids;
+};
+
+const completeRealization = async (registerId, ids) => {
+  const res = await api()
+    .post(`/api/risk-registers/${registerId}/follow-up-realization`)
+    .set(auth(tokens.officer))
+    .send({ items: ids.map((itemId) => ({ itemId, note: 'Realisasi telah dilaksanakan.' })) });
+  expect(res.status).toBe(200);
+  return res;
+};
+
+const finalAssessments = (ids, status = 'SELESAI', note = 'Bukti memadai.') =>
+  ids.map((itemId) => ({ itemId, status, note }));
+
+const assessFinal = async (registerId, ids, status = 'SELESAI', note = 'Bukti memadai.', route = 'approve') => {
+  const assessments = finalAssessments(ids, status, note);
+  if (route === 'follow-up-status') {
+    return api().put(`/api/approvals/${registerId}/follow-up-status`).set(auth(tokens.mr)).send({ items: assessments });
+  }
+  return api().post(`/api/approvals/${registerId}/${route}`).set(auth(tokens.mr)).send({ assessments });
+};
+
+const completeFinalAssessment = (registerId, ids, route = 'approve') => assessFinal(registerId, ids, 'SELESAI', 'Bukti memadai.', route);
+
+const serializeEvent = (e, mitigationDescription, after) => {
+  const items = typeof e.mitigation_items === 'string' ? JSON.parse(e.mitigation_items) : e.mitigation_items || [];
+  const mitigation_items = items.map((m, idx) => ({
+    id: m.id,
+    description: mitigationDescription && idx === 0 ? mitigationDescription : m.description,
+    instruction: m.instruction || null,
+    realization: m.realization || null,
+    mr_note: m.mr_note || '',
+    documents: m.documents || [],
+    follow_up_status: m.follow_up_status || null,
+    follow_up_history: m.follow_up_history || [],
+  }));
+  return {
+    name: e.name,
+    causes: (e.causes || []).map((c) => ({
+      name: c.name,
+      source_id: c.source_id,
+      severity_description: c.severity_description,
+      rp_amount: c.rp_amount,
+      work_unit: c.work_unit,
+    })),
+    inherent: { likelihood: e.inherent_likelihood, impact: e.inherent_impact },
+    control: {
+      present: e.control_present,
+      adequacy: e.control_adequacy,
+      implementation: e.control_implementation_pct,
+    },
+    residual: { likelihood: e.residual_likelihood, impact: e.residual_impact },
+    mitigation_items,
+    after: after || { likelihood: e.after_likelihood, impact: e.after_impact },
+  };
+};
+
 let masters = {};
 const loadMasters = async () => {
   const [cats, trs, srcs] = await Promise.all([
@@ -59,32 +136,33 @@ const loadMasters = async () => {
   masters.source = srcs.body.data.find((s) => s.code === 'INT') || srcs.body.data[0];
 };
 
-const cause = (name, inh, res, aft) => ({
+const cause = (name, inh, res, aft, mitigationDescription) => ({
   name,
-  source_id: masters.source.id,
-  severity_id: null,
-  severity_description: 'Test severity',
-  rp_amount: 50000000,
+  causes: [
+    {
+      name,
+      source_id: masters.source.id,
+      severity_description: 'Test severity',
+      rp_amount: 50000000,
+      work_unit: 'IT',
+    },
+  ],
   inherent: { likelihood: inh[0], impact: inh[1] },
   control: { present: 'ADA', adequacy: 'MEMADAI', implementation: 80 },
   residual: { likelihood: res[0], impact: res[1] },
-  treatment_id: masters.treatment.id,
-  mitigation_description: 'Melakukan monitoring dan analisis rutin secara berkala.',
+  mitigation_items: [
+    { description: mitigationDescription || 'Melakukan monitoring dan analisis rutin secara berkala.' },
+  ],
   after: { likelihood: aft[0], impact: aft[1] },
 });
 
-const payload = (ownerId, objective, causes) => ({
+const payload = (ownerId, objective, events) => ({
   objective,
   risk_owner_id: ownerId,
   categories: [
     {
       category_id: masters.category.id,
-      events: [
-        {
-          name: 'Kenaikan harga bahan baku',
-          causes,
-        },
-      ],
+      events,
     },
   ],
 });
@@ -229,10 +307,10 @@ describe('3. Validasi pembuatan Risk Register', () => {
 
   test('Risk Treatment wajib diisi', async () => {
     const bad = cause('c', [3, 3], [2, 2], [1, 2]);
-    bad.treatment_id = null;
+    bad.mitigation_items = [];
     const res = await createRegister(payload(tokens.ownerUser.id, 'Objective tanpa treatment', [bad]));
     expect(res.status).toBe(400);
-    expect(res.body.details.some((d) => d.field.includes('treatment_id'))).toBe(true);
+    expect(res.body.details.some((d) => d.field.includes('mitigation_items'))).toBe(true);
   });
 });
 
@@ -256,29 +334,29 @@ describe('4. Kalkulasi risk level otomatis', () => {
     expect(code).toMatch(/^RISK-\d{4}-\d{4}$/);
   });
 
-  test('Score dan level per cause sesuai matrix', async () => {
+  test('Score dan level per event sesuai matrix', async () => {
     const res = await api().get(`/api/risk-registers/${registerId}`).set(auth(tokens.officer));
-    const causes = res.body.data.categories[0].events[0].causes;
-    expect(causes).toHaveLength(3);
+    const events = res.body.data.categories[0].events;
+    expect(events).toHaveLength(3);
 
-    const r = causes.find((c) => c.name.startsWith('Rendah'));
-    expect(r.inherent).toMatchObject({ score: 1, level: 'Rendah' });
+    const r = events.find((e) => e.causes[0].name.startsWith('Rendah'));
+    expect(r.inherent_score).toBe(1);
 
-    const m = causes.find((c) => c.name.startsWith('Moderat'));
-    expect(m.inherent).toMatchObject({ score: 9, level: 'Moderat' });
-    expect(m.after).toMatchObject({ score: 9, level: 'Moderat' });
+    const m = events.find((e) => e.causes[0].name.startsWith('Moderat'));
+    expect(m.inherent_score).toBe(9);
+    expect(m.after_score).toBe(9);
 
-    const e = causes.find((c) => c.name.startsWith('Ekstrem'));
-    expect(e.inherent).toMatchObject({ score: 25, level: 'Ekstrem' });
-    expect(e.residual).toMatchObject({ score: 16, level: 'Tinggi' });
+    const e = events.find((ev) => ev.causes[0].name.startsWith('Ekstrem'));
+    expect(e.inherent_score).toBe(25);
+    expect(e.residual_score).toBe(16);
   });
 
   test('Level risk TIDAK boleh diinput manual (field score dihitung sistem)', async () => {
     const res = await api().get(`/api/risk-registers/${registerId}`).set(auth(tokens.officer));
-    const c = res.body.data.categories[0].events[0].causes[0];
-    expect(c.inherent_score).toBe(c.inherent_likelihood * c.inherent_impact);
-    expect(c.residual_score).toBe(c.residual_likelihood * c.residual_impact);
-    expect(c.after_score).toBe(c.after_likelihood * c.after_impact);
+    const e = res.body.data.categories[0].events[0];
+    expect(e.inherent_score).toBe(e.inherent_likelihood * e.inherent_impact);
+    expect(e.residual_score).toBe(e.residual_likelihood * e.residual_impact);
+    expect(e.after_score).toBe(e.after_likelihood * e.after_impact);
   });
 
   test('Kode register unik antar register', async () => {
@@ -292,6 +370,7 @@ describe('4. Kalkulasi risk level otomatis', () => {
 
 describe('5. Workflow approval penuh', () => {
   let id = null;
+  let ids = [];
 
   beforeAll(async () => {
     const res = await createRegister(
@@ -307,30 +386,50 @@ describe('5. Workflow approval penuh', () => {
     expect(res.body.data.status).toBe('WAITING_OWNER_APPROVAL');
   });
 
-  test('MR TIDAK bisa approve saat masih tahap Owner (409)', async () => {
-    const res = await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.mr));
-    expect(res.status).toBe(409); // MR hanya boleh di tahap WAITING_MR_APPROVAL
-  });
-
-  test('Owner melihat antrian approvalnya', async () => {
-    const res = await api().get('/api/approvals').set(auth(tokens.owner));
-    expect(res.status).toBe(200);
-    expect(res.body.items.some((r) => r.id === id)).toBe(true);
-  });
-
-  test('Owner approve → WAITING_MR_APPROVAL', async () => {
+  test('Owner approve → WAITING_MR_INSTRUCTION', async () => {
     const res = await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.owner));
     expect(res.status).toBe(200);
-    expect(res.body.data.status).toBe('WAITING_MR_APPROVAL');
+    expect(res.body.data.status).toBe('WAITING_MR_INSTRUCTION');
   });
 
-  test('Approve ganda DITOLAK (409)', async () => {
+  test('Approve owner ganda DITOLAK (409)', async () => {
     const res = await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.owner));
     expect(res.status).toBe(409);
   });
 
-  test('MR approve → APPROVED', async () => {
+  test('MR TIDAK bisa approve sebelum memberi instruksi (409)', async () => {
     const res = await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.mr));
+    expect(res.status).toBe(409);
+  });
+
+  test('MR melihat antrian instruksi', async () => {
+    const res = await api().get('/api/approvals').set(auth(tokens.mr));
+    expect(res.status).toBe(200);
+    expect(res.body.items.some((r) => r.id === id)).toBe(true);
+  });
+
+  test('Instruksi MR → WAITING_OFFICER_FOLLOWUP', async () => {
+    ids = await completeInstruction(id);
+    const detail = await api().get(`/api/risk-registers/${id}`).set(auth(tokens.officer));
+    expect(detail.body.data.status).toBe('WAITING_OFFICER_FOLLOWUP');
+    const rawItems = detail.body.data.categories[0].events[0].mitigation_items;
+    const item = typeof rawItems === 'string' ? JSON.parse(rawItems)[0] : rawItems[0];
+    expect(item.instruction.text).toBe('Lakukan tindak lanjut sesuai mitigasi.');
+  });
+
+  test('Realisasi Officer → WAITING_MR_APPROVAL', async () => {
+    await completeRealization(id, ids);
+    const detail = await api().get(`/api/risk-registers/${id}`).set(auth(tokens.officer));
+    expect(detail.body.data.status).toBe('WAITING_MR_APPROVAL');
+  });
+
+  test('MR approve tanpa penilaian ditolak (400)', async () => {
+    const res = await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.mr));
+    expect(res.status).toBe(400);
+  });
+
+  test('MR approve dengan penilaian → APPROVED', async () => {
+    const res = await completeFinalAssessment(id, ids);
     expect(res.status).toBe(200);
     expect(res.body.data.status).toBe('APPROVED');
     expect(res.body.data.approved_at).toBeTruthy();
@@ -341,10 +440,12 @@ describe('5. Workflow approval penuh', () => {
     expect(res.status).toBe(409);
   });
 
-  test('Approval history lengkap (submit, approve owner, approve MR)', async () => {
+  test('Approval history lengkap', async () => {
     const res = await api().get(`/api/risk-registers/${id}/history`).set(auth(tokens.mr));
     const actions = res.body.data.approvals.map((a) => a.action);
-    expect(actions).toEqual(['SUBMIT', 'APPROVE_OWNER', 'APPROVE_MR']);
+    expect(actions).toEqual([
+      'SUBMIT', 'APPROVE_OWNER', 'MR_INSTRUCTION', 'OFFICER_REALIZATION', 'APPROVE_MR',
+    ]);
   });
 
   test('Register APPROVED tidak bisa diedit lagi', async () => {
@@ -355,22 +456,7 @@ describe('5. Workflow approval penuh', () => {
       categories: [
         {
           category_id: detail.categories[0].category_id,
-          events: [
-            {
-              name: 'Event',
-              causes: [
-                {
-                  name: 'Cause',
-                  inherent: { likelihood: 1, impact: 1 },
-                  control: { present: 'ADA', adequacy: 'MEMADAI', implementation: 100 },
-                  residual: { likelihood: 1, impact: 1 },
-                  treatment_id: detail.categories[0].events[0].causes[0].treatment_id,
-                  mitigation_description: 'x',
-                  after: { likelihood: 1, impact: 1 },
-                },
-              ],
-            },
-          ],
+          events: [serializeEvent(detail.categories[0].events[0], 'x')],
         },
       ],
     };
@@ -381,6 +467,14 @@ describe('5. Workflow approval penuh', () => {
 
 describe('6. Rejection & mitigation history', () => {
   let id = null;
+  let ids = [];
+
+  const firstItem = async () => {
+    const detail = (await api().get(`/api/risk-registers/${id}`).set(auth(tokens.officer))).body.data;
+    const rawItems = detail.categories[0].events[0].mitigation_items;
+    const items = typeof rawItems === 'string' ? JSON.parse(rawItems) : rawItems;
+    return items[0];
+  };
 
   beforeAll(async () => {
     const res = await createRegister(
@@ -388,6 +482,7 @@ describe('6. Rejection & mitigation history', () => {
     );
     expect(res.status).toBe(201);
     id = res.body.data.id;
+    ids = await mitigationItemIds(id);
     await api().post(`/api/risk-registers/${id}/submit`).set(auth(tokens.officer));
   });
 
@@ -422,17 +517,11 @@ describe('6. Rejection & mitigation history', () => {
         {
           category_id: cat.category_id,
           events: [
-            {
-              name: cat.events[0].name,
-              causes: [
-                {
-                  ...serializeCause(cat.events[0].causes[0]),
-                  mitigation_description:
-                    '1. Melakukan analisis dan monitoring biaya secara rutin.\n2. Melakukan negosiasi dengan pemasok untuk harga lebih kompetitif.',
-                  after: { likelihood: 2, impact: 2 },
-                },
-              ],
-            },
+            serializeEvent(
+              cat.events[0],
+              '1. Melakukan analisis dan monitoring biaya secara rutin.\n2. Melakukan negosiasi dengan pemasok untuk harga lebih kompetitif.',
+              { likelihood: 2, impact: 2 }
+            ),
           ],
         },
       ],
@@ -446,64 +535,51 @@ describe('6. Rejection & mitigation history', () => {
     expect(hist.mitigations).toHaveLength(2);
     const versions = hist.mitigations.map((m) => m.version);
     expect(versions).toEqual(expect.arrayContaining([1, 2]));
-    // Versi 1 tetap menyimpan snapshot mitigasi lama
     const v1 = hist.mitigations.find((m) => m.version === 1);
-    expect(JSON.parse(v1.snapshot).items[0].mitigation_description).toContain('Melakukan monitoring');
+    expect(JSON.parse(v1.snapshot).items[0].mitigation_items[0].description).toContain('Melakukan monitoring');
   });
 
-  test('Resubmit → Owner approve → MR reject → REJECTED_BY_MR', async () => {
+  test('Resubmit → Owner approve → MR instruction → Officer realization', async () => {
     const s1 = await api().post(`/api/risk-registers/${id}/submit`).set(auth(tokens.officer));
     expect(s1.status).toBe(200);
+    expect(s1.body.data.status).toBe('WAITING_OWNER_APPROVAL');
 
     const a1 = await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.owner));
-    expect(a1.body.data.status).toBe('WAITING_MR_APPROVAL');
+    expect(a1.body.data.status).toBe('WAITING_MR_INSTRUCTION');
 
-    const rj = await api()
-      .post(`/api/approvals/${id}/reject`)
-      .set(auth(tokens.mr))
-      .send({ reason: 'Residual risk belum sesuai hasil evaluasi.' });
-    expect(rj.status).toBe(200);
-    expect(rj.body.data.status).toBe('REJECTED_BY_MR');
+    ids = await completeInstruction(id);
+    const r1 = await completeRealization(id, ids);
+    expect(r1.body.data.status).toBe('WAITING_MR_APPROVAL');
   });
 
-  test('Perbaikan lagi → Owner approve → MR approve → APPROVED', async () => {
-    const detail = (await api().get(`/api/risk-registers/${id}`).set(auth(tokens.officer))).body.data;
-    const cat = detail.categories[0];
-    const update = {
-      objective: detail.objective,
-      risk_owner_id: detail.risk_owner_id,
-      categories: [
-        {
-          category_id: cat.category_id,
-          events: [
-            {
-              name: cat.events[0].name,
-              causes: [
-                {
-                  ...serializeCause(cat.events[0].causes[0]),
-                  mitigation_description: 'Mitigasi final versi 3 dengan kontrol berkala dan audit internal.',
-                  after: { likelihood: 1, impact: 2 },
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    };
+  test('MR nilai BELUM_MEMADAI → kembali ke Officer + bukti lama masuk history', async () => {
+    const res = await assessFinal(id, ids, 'BELUM_MEMADAI', 'Bukti belum menjelaskan hasil tindak lanjut.');
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('WAITING_OFFICER_FOLLOWUP');
 
-    const up = await api().put(`/api/risk-registers/${id}`).set(auth(tokens.officer)).send(update);
-    expect(up.status).toBe(200);
-    expect(up.body.data.current_version).toBe(3);
+    const item = await firstItem();
+    expect(item.follow_up_status).toBe('BELUM_MEMADAI');
+    expect(item.realization?.note || null).toBeNull();
+    expect(item.documents || []).toHaveLength(0);
+    const archived = (item.follow_up_history || []).find((h) => h.action === 'MR_FINAL_RETURN');
+    expect(archived).toBeTruthy();
+    expect(archived.realization.note).toBe('Realisasi telah dilaksanakan.');
+  });
 
-    await api().post(`/api/risk-registers/${id}/submit`).set(auth(tokens.officer));
-    await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.owner));
-    const final = await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.mr));
+  test('Officer kirim ulang bukti → MR setujui → APPROVED', async () => {
+    const r2 = await completeRealization(id, ids);
+    expect(r2.body.data.status).toBe('WAITING_MR_APPROVAL');
+
+    const final = await completeFinalAssessment(id, ids);
     expect(final.body.data.status).toBe('APPROVED');
 
     const hist = (await api().get(`/api/risk-registers/${id}/history`).set(auth(tokens.mr))).body.data;
-    expect(hist.mitigations).toHaveLength(3);
-    const allActions = hist.approvals.map((a) => a.action);
-    expect(allActions).toEqual(['SUBMIT', 'REJECT_OWNER', 'SUBMIT', 'APPROVE_OWNER', 'REJECT_MR', 'SUBMIT', 'APPROVE_OWNER', 'APPROVE_MR']);
+    expect(hist.mitigations).toHaveLength(2);
+    expect(hist.approvals.map((a) => a.action)).toEqual([
+      'SUBMIT', 'REJECT_OWNER',
+      'SUBMIT', 'APPROVE_OWNER', 'MR_INSTRUCTION', 'OFFICER_REALIZATION',
+      'MR_FINAL_RETURN', 'OFFICER_REALIZATION', 'APPROVE_MR',
+    ]);
   });
 });
 
@@ -577,23 +653,241 @@ describe('8. Dashboard / matrix / monitoring / export (MR)', () => {
   });
 });
 
-/** Konversi cause detail API -> payload update */
-function serializeCause(c) {
-  return {
-    name: c.name,
-    source_id: c.source_id,
-    severity_id: c.severity_id,
-    severity_description: c.severity_description,
-    rp_amount: c.rp_amount,
-    inherent: { likelihood: c.inherent_likelihood, impact: c.inherent_impact },
-    control: {
-      present: c.control_present,
-      adequacy: c.control_adequacy,
-      implementation: c.control_implementation_pct,
-    },
-    residual: { likelihood: c.residual_likelihood, impact: c.residual_impact },
-    treatment_id: c.treatment_id,
-    mitigation_description: c.mitigation_description,
-    after: { likelihood: c.after_likelihood, impact: c.after_impact },
+describe('9. Instruksi MR dikembalikan', () => {
+  let id = null;
+
+  beforeAll(async () => {
+    const res = await createRegister(
+      payload(tokens.ownerUser.id, `Instruksi reject ${RUN}`, [cause('Instruksi reject', [3, 3], [2, 2], [1, 2])])
+    );
+    expect(res.status).toBe(201);
+    id = res.body.data.id;
+    await api().post(`/api/risk-registers/${id}/submit`).set(auth(tokens.officer));
+    await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.owner));
+  });
+
+  test('Officer TIDAK bisa mengisi instruksi MR (403)', async () => {
+    const res = await api()
+      .post(`/api/risk-registers/${id}/mr-instruction`)
+      .set(auth(tokens.officer))
+      .send({ items: [{ itemId: 'x', text: 'x', note: 'x' }] });
+    expect(res.status).toBe(403);
+  });
+
+  test('Reject instruksi tanpa alasan ditolak (400)', async () => {
+    const res = await api().post(`/api/approvals/${id}/reject-instruction`).set(auth(tokens.mr)).send({ reason: '' });
+    expect(res.status).toBe(400);
+  });
+
+  test('MR mengembalikan instruksi → REJECTED_BY_MR', async () => {
+    const res = await api()
+      .post(`/api/approvals/${id}/reject-instruction`)
+      .set(auth(tokens.mr))
+      .send({ reason: 'Instruksi perlu disesuaikan.' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('REJECTED_BY_MR');
+  });
+
+  test('Submit ulang kembali ke approval Owner', async () => {
+    const res = await api().post(`/api/risk-registers/${id}/submit`).set(auth(tokens.officer));
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('WAITING_OWNER_APPROVAL');
+  });
+});
+
+describe('10. Multi-item mitigasi pada satu risk event', () => {
+  let id = null;
+  let ids = [];
+
+  beforeAll(loadMasters);
+
+  beforeAll(async () => {
+    const event = cause('Multi mitigasi', [3, 3], [2, 2], [1, 2], 'Mitigasi pertama');
+    event.mitigation_items.push({ description: 'Mitigasi kedua' });
+    const res = await createRegister(payload(tokens.ownerUser.id, `Multi mitigasi ${RUN}`, [event]));
+    expect(res.status).toBe(201);
+    id = res.body.data.id;
+    ids = await mitigationItemIds(id);
+    expect(ids).toHaveLength(2);
+    await api().post(`/api/risk-registers/${id}/submit`).set(auth(tokens.officer));
+    await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.owner));
+  });
+
+  const storedItems = async () => {
+    const detail = await api().get(`/api/risk-registers/${id}`).set(auth(tokens.officer));
+    const raw = detail.body.data.categories[0].events[0].mitigation_items;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
   };
-}
+
+  test('Instruksi MR tersimpan untuk kedua item mitigasi', async () => {
+    const items = ids.map((itemId, i) => ({
+      itemId,
+      text: `Instruksi ${i + 1}`,
+      note: `Catatan MR ${i + 1}`,
+    }));
+    const res = await api()
+      .post(`/api/risk-registers/${id}/mr-instruction`)
+      .set(auth(tokens.mr))
+      .send({ items });
+    expect(res.status).toBe(200);
+
+    const byId = Object.fromEntries((await storedItems()).map((m) => [String(m.id), m]));
+    items.forEach((item, i) => {
+      expect(byId[String(item.itemId)].instruction.text).toBe(item.text);
+      expect(byId[String(item.itemId)].instruction.note).toBe(item.note);
+    });
+  });
+
+  test('Realisasi Officer tersimpan untuk kedua item mitigasi', async () => {
+    const items = ids.map((itemId, i) => ({ itemId, note: `Realisasi ${i + 1}` }));
+    const res = await api()
+      .post(`/api/risk-registers/${id}/follow-up-realization`)
+      .set(auth(tokens.officer))
+      .send({ items });
+    expect(res.status).toBe(200);
+
+    const byId = Object.fromEntries((await storedItems()).map((m) => [String(m.id), m]));
+    items.forEach((item) => {
+      expect(byId[String(item.itemId)].realization.note).toBe(item.note);
+    });
+  });
+
+  test('Penilaian MR tersimpan untuk kedua item mitigasi', async () => {
+    const assessments = ids.map((itemId, i) => ({
+      itemId,
+      status: i === 0 ? 'SELESAI' : 'BELUM_MEMADAI',
+      note: `Penilaian ${i + 1}`,
+    }));
+    const res = await api()
+      .post(`/api/approvals/${id}/approve`)
+      .set(auth(tokens.mr))
+      .send({ assessments });
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('WAITING_OFFICER_FOLLOWUP');
+
+    const byId = Object.fromEntries((await storedItems()).map((m) => [String(m.id), m]));
+    assessments.forEach((assessment) => {
+      expect(byId[String(assessment.itemId)].follow_up_status).toBe(assessment.status);
+      expect(byId[String(assessment.itemId)].mr_note).toBe(assessment.note);
+    });
+  });
+
+  test('Upload bukti menyimpan catatan realisasi dan dokumen bisa dihapus', async () => {
+    const itemId = ids[1];
+    const note = 'Catatan realisasi saat upload bukti';
+    const upload = await api()
+      .post(`/api/risk-registers/${id}/mitigation-items/${itemId}/documents`)
+      .set(auth(tokens.officer))
+      .field('note', note)
+      .attach('files', Buffer.from('%PDF-1.4 bukti pdf'), 'bukti.pdf');
+    expect(upload.status).toBe(200);
+
+    const afterUpload = Object.fromEntries((await storedItems()).map((m) => [String(m.id), m]));
+    expect(afterUpload[String(itemId)].realization.note).toBe(note);
+    expect(afterUpload[String(itemId)].documents).toHaveLength(1);
+    const docId = afterUpload[String(itemId)].documents[0].id;
+
+    const remove = await api()
+      .delete(`/api/risk-registers/${id}/mitigation-items/${itemId}/documents/${docId}`)
+      .set(auth(tokens.officer));
+    expect(remove.status).toBe(200);
+
+    const afterRemove = Object.fromEntries((await storedItems()).map((m) => [String(m.id), m]));
+    expect(afterRemove[String(itemId)].documents).toHaveLength(0);
+    expect(afterRemove[String(itemId)].realization.note).toBe(note);
+  });
+
+  test('Item yang sudah SELESAI tidak dapat diubah Officer', async () => {
+    const doneId = ids[0];
+    const submit = await api()
+      .post(`/api/risk-registers/${id}/follow-up-realization`)
+      .set(auth(tokens.officer))
+      .send({ items: [{ itemId: doneId, note: 'Coba ubah item yang sudah sesuai' }] });
+    expect(submit.status).toBe(409);
+
+    const upload = await api()
+      .post(`/api/risk-registers/${id}/mitigation-items/${doneId}/documents`)
+      .set(auth(tokens.officer))
+      .field('note', 'Coba ubah item yang sudah sesuai')
+      .attach('files', Buffer.from('%PDF-1.4 bukti terkunci'), 'bukti-terkunci.pdf');
+    expect(upload.status).toBe(409);
+
+    const byId = Object.fromEntries((await storedItems()).map((m) => [String(m.id), m]));
+    expect(byId[String(doneId)].follow_up_status).toBe('SELESAI');
+    expect(byId[String(doneId)].realization.note).toBe('Realisasi 1');
+    expect(byId[String(doneId)].documents || []).toHaveLength(0);
+  });
+
+  test('Penilaian MR pada item SELESAI tidak dapat diubah', async () => {
+    const resubmit = await api()
+      .post(`/api/risk-registers/${id}/follow-up-realization`)
+      .set(auth(tokens.officer))
+      .send({ items: [{ itemId: ids[1], note: 'Realisasi ulang item belum sesuai' }] });
+    expect(resubmit.body.data.status).toBe('WAITING_MR_APPROVAL');
+
+    const save = await api()
+      .put(`/api/approvals/${id}/follow-up-status`)
+      .set(auth(tokens.mr))
+      .send({ items: [{ itemId: ids[0], status: 'BELUM_MEMADAI', note: 'Coba ubah penilaian final' }] });
+    expect(save.status).toBe(409);
+
+    const approve = await api()
+      .post(`/api/approvals/${id}/approve`)
+      .set(auth(tokens.mr))
+      .send({ assessments: [{ itemId: ids[0], status: 'BELUM_MEMADAI', note: 'Coba ubah penilaian final' }] });
+    expect(approve.status).toBe(409);
+
+    const byId = Object.fromEntries((await storedItems()).map((m) => [String(m.id), m]));
+    expect(byId[String(ids[0])].follow_up_status).toBe('SELESAI');
+    expect(byId[String(ids[0])].mr_note).toBe('Penilaian 1');
+  });
+});
+
+describe('11. Riwayat penilaian MR memakai status terakhir', () => {
+  let id = null;
+  let itemId = null;
+
+  beforeAll(loadMasters);
+
+  beforeAll(async () => {
+    const event = cause('Riwayat status MR', [3, 3], [2, 2], [1, 2], 'Mitigasi riwayat');
+    const res = await createRegister(payload(tokens.ownerUser.id, `Riwayat status MR ${RUN}`, [event]));
+    expect(res.status).toBe(201);
+    id = res.body.data.id;
+    [itemId] = await mitigationItemIds(id);
+    await api().post(`/api/risk-registers/${id}/submit`).set(auth(tokens.officer));
+    await api().post(`/api/approvals/${id}/approve`).set(auth(tokens.owner));
+    await completeInstruction(id);
+    await completeRealization(id, [itemId]);
+  });
+
+  const storedItem = async () => {
+    const detail = await api().get(`/api/risk-registers/${id}`).set(auth(tokens.officer));
+    const raw = detail.body.data.categories[0].events[0].mitigation_items;
+    return (typeof raw === 'string' ? JSON.parse(raw) : raw)[0];
+  };
+
+  test('Perubahan status saat selesaikan penilaian tercatat di riwayat', async () => {
+    const first = await api()
+      .post(`/api/approvals/${id}/approve`)
+      .set(auth(tokens.mr))
+      .send({ assessments: [{ itemId, status: 'TIDAK_DAPAT_DITINDAKLANJUTI', note: 'Penilaian pertama' }] });
+    expect(first.status).toBe(200);
+    expect((await storedItem()).follow_up_status).toBe('TIDAK_DAPAT_DITINDAKLANJUTI');
+
+    await completeRealization(id, [itemId]);
+    const second = await api()
+      .post(`/api/approvals/${id}/approve`)
+      .set(auth(tokens.mr))
+      .send({ assessments: [{ itemId, status: 'BELUM_MEMADAI', note: 'Penilaian kedua' }] });
+    expect(second.status).toBe(200);
+
+    const item = await storedItem();
+    expect(item.follow_up_status).toBe('BELUM_MEMADAI');
+    const returns = (item.follow_up_history || []).filter((h) => h.action === 'MR_FINAL_RETURN');
+    expect(returns).toHaveLength(2);
+    expect(returns[0].follow_up_status).toBe('TIDAK_DAPAT_DITINDAKLANJUTI');
+    expect(returns[1].follow_up_status).toBe('BELUM_MEMADAI');
+    expect(returns[1].mr_note).toBe('Penilaian kedua');
+  });
+});

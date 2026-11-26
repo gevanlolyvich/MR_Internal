@@ -42,6 +42,16 @@ exports.remove = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+exports.setMrInstructions = asyncHandler(async (req, res) => {
+  const data = await service.setMrInstructions(req.params.id, req.body.items, req);
+  res.json({ success: true, message: 'Instruksi tindak lanjut dikirim ke Officer', data });
+});
+
+exports.submitFollowUpRealization = asyncHandler(async (req, res) => {
+  const data = await service.submitFollowUpRealization(req.params.id, req.body.items, req);
+  res.json({ success: true, message: 'Realisasi dikirim ke Risk Owner', data });
+});
+
 exports.uploadDocuments = asyncHandler(async (req, res) => {
   const data = await service.uploadDocuments(req.params.id, req.params.itemId, req.files, req);
   res.json({ success: true, data });

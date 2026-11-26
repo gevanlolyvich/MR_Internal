@@ -5,7 +5,15 @@
 process.env.NODE_ENV = 'test';
 
 const { PERMISSIONS, ROLES, hasPermission } = require('../src/config/roles');
-const { STATUS, EDITABLE_STATUS, OWNER_PENDING, MR_PENDING, ALL_STATUS } = require('../src/config/status');
+const {
+  STATUS,
+  EDITABLE_STATUS,
+  OWNER_PENDING,
+  MR_PENDING,
+  ALL_STATUS,
+  FOLLOW_UP_DONE,
+  FOLLOW_UP_RETURN,
+} = require('../src/config/status');
 const { calcScore } = require('../src/utils/riskLevel');
 const { parsePagination } = require('../src/utils/pagination');
 const ApiError = require('../src/utils/ApiError');
@@ -71,6 +79,8 @@ describe('Status system (terpusat)', () => {
         'REJECTED_BY_MR',
         'APPROVED',
         'ARCHIVED',
+        'WAITING_MR_INSTRUCTION',
+        'WAITING_OFFICER_FOLLOWUP',
       ])
     );
   });
@@ -81,8 +91,13 @@ describe('Status system (terpusat)', () => {
 
   test('Antrian approval owner & MR berbeda', () => {
     expect(OWNER_PENDING).toEqual([STATUS.WAITING_OWNER_APPROVAL]);
-    expect(MR_PENDING).toEqual([STATUS.WAITING_MR_APPROVAL]);
-    expect(ALL_STATUS.length).toBe(7);
+    expect(MR_PENDING).toEqual([STATUS.WAITING_MR_INSTRUCTION, STATUS.WAITING_MR_APPROVAL]);
+    expect(ALL_STATUS.length).toBe(9);
+  });
+
+  test('Penilaian MR: SELESAI menutup item, sisanya dikembalikan ke Officer', () => {
+    expect(FOLLOW_UP_DONE).toBe('SELESAI');
+    expect(FOLLOW_UP_RETURN).toEqual(['BELUM_MEMADAI', 'TIDAK_DAPAT_DITINDAKLANJUTI']);
   });
 });
 

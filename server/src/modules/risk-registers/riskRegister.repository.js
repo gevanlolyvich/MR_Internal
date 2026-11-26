@@ -34,8 +34,9 @@ const findList = async (filters = {}, scope = {}, pagination = {}) => {
     params.push(filters.branch);
   }
   if (filters.status) {
-    where.push('rr.status = ?');
-    params.push(filters.status);
+    const statuses = Array.isArray(filters.status) ? filters.status : [filters.status];
+    where.push(`rr.status IN (${statuses.map(() => '?').join(',')})`);
+    params.push(...statuses);
   }
   if (filters.owner) {
     where.push('rr.risk_owner_id = ?');

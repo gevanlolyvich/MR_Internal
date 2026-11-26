@@ -7,6 +7,7 @@ import api from '../api/client';
 const MENU = [
   { to: '/dashboard', label: 'Dashboard', perm: 'dashboard:view', icon: 'M3 12l9-9 9 9M5 10v10a1 1 0 001 1h4v-6h4v6h4a1 1 0 001-1V10' },
   { to: '/risk-registers', label: 'Risk Register', perm: 'risk-register:view', icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
+  { to: '/follow-ups', label: 'Tindak Lanjut', roles: ['MR', 'RISK_OFFICER'], icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4' },
   { to: '/approvals', label: 'Approval', perm: 'approval', icon: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z', badge: 'approval' },
   { to: '/users', label: 'User Management', perm: 'user:manage', icon: 'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z' },
   { to: '/branches', label: 'Branch Management', perm: 'branch:manage', icon: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4' },
@@ -119,7 +120,8 @@ export default function MainLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const allowed = (item) => {
-    if (item.perm === 'approval') return can('approval:owner') || can('approval:mr');
+    if (item.roles) return item.roles.includes(user?.role);
+    if (item.perm === 'approval') return can('approval:owner');
     return can(item.perm);
   };
 

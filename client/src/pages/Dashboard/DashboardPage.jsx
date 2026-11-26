@@ -22,8 +22,10 @@ import { STATUS_LABEL, RISK_LEVEL_COLORS } from '../../constants';
 const CARDS = [
   { key: 'total_risk', label: 'Total Risk', color: 'bg-primary-700' },
   { key: 'active_risk', label: 'Active Risk', color: 'bg-jxb-green' },
-  { key: 'waiting_owner', label: 'Waiting Owner Approval', color: 'bg-amber-500' },
-  { key: 'waiting_mr', label: 'Waiting MR Approval', color: 'bg-primary-500' },
+  { key: 'waiting_mr_instruction', label: 'Instruksi MR', color: 'bg-violet-500' },
+  { key: 'waiting_officer_followup', label: 'Realisasi Officer', color: 'bg-cyan-500' },
+  { key: 'waiting_owner', label: 'Verifikasi Owner', color: 'bg-amber-500' },
+  { key: 'waiting_mr', label: 'Penilaian MR', color: 'bg-primary-500' },
   { key: 'rejected_risk', label: 'Rejected Risk', color: 'bg-jxb-red' },
   { key: 'extreme_risk', label: 'Extreme Risk', color: 'bg-jxb-red' },
   { key: 'high_risk', label: 'High Risk', color: 'bg-jxb-orange' },

@@ -4,8 +4,9 @@ const { authenticate, authorize } = require('../../middlewares/auth');
 const { query } = require('../../db/pool');
 const rrService = require('../risk-registers/riskRegister.service');
 const { parsePagination } = require('../../utils/pagination');
-const { SCORE_SUB } = require('../dashboard/dashboard.service');
+const { SCORE_SUB, COUNTER_ORDER, COUNTER_META } = require('../dashboard/dashboard.service');
 const { ROLES } = require('../../config/roles');
+const { STATUS, STATUS_LABEL } = require('../../config/status');
 
 router.use(authenticate, authorize('monitoring:view'));
 
@@ -36,10 +37,12 @@ router.get(
     const [rows] = await query(
       `SELECT b.id AS branch_id, b.name AS branch_name,
               COUNT(DISTINCT rr.id) AS total_risk,
-              SUM(rr.status = 'APPROVED') AS active_risk,
-              SUM(rr.status = 'WAITING_OWNER_APPROVAL') AS waiting_owner,
-              SUM(rr.status = 'WAITING_MR_APPROVAL') AS waiting_mr,
-              SUM(rr.status IN ('REJECTED_BY_OWNER','REJECTED_BY_MR')) AS rejected_risk,
+              SUM(rr.status = '${STATUS.APPROVED}') AS active_risk,
+              SUM(rr.status = '${STATUS.WAITING_OWNER_APPROVAL}') AS waiting_owner,
+              SUM(rr.status = '${STATUS.WAITING_MR_INSTRUCTION}') AS waiting_mr_instruction,
+              SUM(rr.status = '${STATUS.WAITING_OFFICER_FOLLOWUP}') AS waiting_officer_followup,
+              SUM(rr.status = '${STATUS.WAITING_MR_APPROVAL}') AS waiting_mr,
+              SUM(rr.status IN ('${STATUS.REJECTED_BY_OWNER}','${STATUS.REJECTED_BY_MR}')) AS rejected_risk,
               MAX(${SCORE_SUB.inherent}) AS max_inherent,
               MAX(${SCORE_SUB.residual}) AS max_residual,
               MAX(${SCORE_SUB.after}) AS max_after,
@@ -59,21 +62,31 @@ router.get(
       return f ? { score: Number(s), level: f.level, color: f.color } : { score: Number(s), level: '-', color: '#94a3b8' };
     };
 
-    res.json({
-      success: true,
-      data: rows.map((r) => ({
-        ...r,
-        total_risk: Number(r.total_risk),
-        active_risk: Number(r.active_risk || 0),
-        waiting_owner: Number(r.waiting_owner || 0),
-        waiting_mr: Number(r.waiting_mr || 0),
-        rejected_risk: Number(r.rejected_risk || 0),
-        inherent: levelOf(r.max_inherent),
-        residual: levelOf(r.max_residual),
-        after: levelOf(r.max_after),
-        avg_after: Number(r.avg_after || 0),
+    const data = rows.map((r) => ({
+      ...r,
+      total_risk: Number(r.total_risk),
+      active_risk: Number(r.active_risk || 0),
+      waiting_owner: Number(r.waiting_owner || 0),
+      waiting_mr_instruction: Number(r.waiting_mr_instruction || 0),
+      waiting_officer_followup: Number(r.waiting_officer_followup || 0),
+      waiting_mr: Number(r.waiting_mr || 0),
+      rejected_risk: Number(r.rejected_risk || 0),
+      inherent: levelOf(r.max_inherent),
+      residual: levelOf(r.max_residual),
+      after: levelOf(r.max_after),
+      avg_after: Number(r.avg_after || 0),
+    }));
+
+    const workflow = {
+      order: COUNTER_ORDER,
+      steps: COUNTER_ORDER.map((key) => ({
+        key,
+        ...COUNTER_META[key],
+        total: data.reduce((sum, r) => sum + Number(r[key] || 0), 0),
       })),
-    });
+    };
+
+    res.json({ success: true, status_labels: STATUS_LABEL, workflow, data });
   })
 );
 

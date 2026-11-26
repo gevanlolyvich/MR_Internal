@@ -6,6 +6,7 @@ import { StatusBadge, LevelBadge } from '../../components/ui/Badges';
 import { ConfirmDialog } from '../../components/ui/Modal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
+import { STATUS, STATUS_LABEL } from '../../constants';
 
 const CURRENT_YEAR = new Date().getFullYear();
 const YEARS = Array.from({ length: 6 }, (_, i) => CURRENT_YEAR - i);
@@ -159,8 +160,8 @@ export default function RiskRegisterListPage() {
           <Field label="Status">
             <select className="input" value={filters.status} onChange={(e) => setF('status', e.target.value)}>
               <option value="">Semua status</option>
-              {['DRAFT', 'WAITING_OWNER_APPROVAL', 'REJECTED_BY_OWNER', 'WAITING_MR_APPROVAL', 'REJECTED_BY_MR', 'APPROVED', 'ARCHIVED'].map((s) => (
-                <option key={s} value={s}>{s.replaceAll('_', ' ')}</option>
+              {Object.values(STATUS).map((s) => (
+                <option key={s} value={s}>{STATUS_LABEL[s]}</option>
               ))}
             </select>
           </Field>
@@ -221,7 +222,7 @@ export default function RiskRegisterListPage() {
               </thead>
               <tbody>
                 {data.items.map((r) => {
-                  const editable = canEdit && ['DRAFT', 'REJECTED_BY_OWNER', 'REJECTED_BY_MR'].includes(r.status) && (user.role !== 'RISK_OFFICER' || r.risk_officer_id === user.id);
+                  const editable = canEdit && user.role === 'RISK_OFFICER' && ['DRAFT', 'REJECTED_BY_OWNER', 'REJECTED_BY_MR'].includes(r.status) && r.risk_officer_id === user.id;
                   const submittable = canSubmit && editable;
                   return (
                     <tr key={r.id}>

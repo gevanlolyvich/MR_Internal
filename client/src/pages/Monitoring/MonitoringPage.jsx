@@ -13,7 +13,7 @@ import api, { parseError } from '../../api/client';
 import { Card, PageHeader, Spinner, EmptyState, Field, Pagination } from '../../components/ui/Common';
 import { StatusBadge, LevelBadge } from '../../components/ui/Badges';
 import { useToast } from '../../contexts/ToastContext';
-import { RISK_LEVEL_COLORS } from '../../constants';
+import { RISK_LEVEL_COLORS, STATUS, STATUS_LABEL } from '../../constants';
 
 const YEARS = Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i);
 const LEVELS = ['Rendah', 'Moderat', 'Tinggi', 'Ekstrem'];
@@ -69,7 +69,12 @@ export default function MonitoringPage() {
     (acc, s) => ({
       risk: acc.risk + Number(s.total_risk || 0),
       active: acc.active + Number(s.active_risk || 0),
-      pending: acc.pending + Number(s.waiting_owner || 0) + Number(s.waiting_mr || 0),
+      pending:
+        acc.pending +
+        Number(s.waiting_mr_instruction || 0) +
+        Number(s.waiting_officer_followup || 0) +
+        Number(s.waiting_owner || 0) +
+        Number(s.waiting_mr || 0),
       rejected: acc.rejected + Number(s.rejected_risk || 0),
     }),
     { risk: 0, active: 0, pending: 0, rejected: 0 }
@@ -118,8 +123,8 @@ export default function MonitoringPage() {
           <Field label="Status">
             <select className="input" value={filters.status} onChange={(e) => setF('status', e.target.value)}>
               <option value="">Semua</option>
-              {['DRAFT', 'WAITING_OWNER_APPROVAL', 'REJECTED_BY_OWNER', 'WAITING_MR_APPROVAL', 'REJECTED_BY_MR', 'APPROVED'].map((s) => (
-                <option key={s} value={s}>{s.replaceAll('_', ' ')}</option>
+              {Object.values(STATUS).map((s) => (
+                <option key={s} value={s}>{STATUS_LABEL[s]}</option>
               ))}
             </select>
           </Field>
